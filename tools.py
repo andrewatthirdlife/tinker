@@ -541,7 +541,7 @@ SCHEMAS = [
         "type": "function",
         "function": {
             "name": "lint",
-            "description": "Check Python code for errors such as undefined names, unused imports and syntax errors. Run it on the files you changed before you finish.",
+            "description": "Check Python code for errors such as undefined names, unused imports and syntax errors. Run it on the files you changed before you finish. Only fix problems in code you changed for this request; mention any other problems in your answer instead of fixing them.",
             "parameters": {
                 "type": "object",
                 "properties": {

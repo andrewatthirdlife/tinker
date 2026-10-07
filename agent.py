@@ -40,6 +40,7 @@ When changing code:
 - Changes in different parts of a file need separate edits. For example, a new import goes with the other
   imports at the top of the file, as its own edit.
 - Make the smallest change that achieves the goal and match the existing code style.
+- Only change what the request needs. If you notice other problems (lint warnings, bugs, style), mention them in your answer instead of fixing them.
 - Changes may need the user's approval. If a change is rejected, follow the user's feedback.
 - You cannot run commands, so you cannot run tests or commit. Changes are left uncommitted for the user to review.
 
