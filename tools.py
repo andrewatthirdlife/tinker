@@ -3,6 +3,7 @@ import difflib
 import re
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -16,6 +17,7 @@ EDIT_CONTEXT_LINES = 3
 NOT_FOUND_MIN_SIMILARITY = 0.4
 NOT_FOUND_MAX_LINES = 30
 WRITE_TOOLS = {"edit_file", "write_file"}
+LINT_PROBLEM_RE = re.compile(r"^\S+:\d+:\d+: (.*)$")  # "path:line:col: CODE message"
 
 # Receives (path, diff); returns None to approve, or a rejection message for the model.
 ConfirmWrite = Callable[[str, str], str | None]
@@ -36,7 +38,8 @@ class ChangeLog:
     files: dict[str, str] = field(default_factory=dict)  # path -> "created", "edited" or "rewritten"
     failed: int = 0
     rejected: int = 0
-    lint_problems: int | None = None  # None means lint was not run
+    lint_problems: int | None = None  # new problems remaining; None means lint was not run
+    lint_existing: int = 0  # problems in the changed files that were already there before this request
     originals: dict[str, str | None] = field(default_factory=dict)  # content before this request; None = new file
 
     def record(self, path: str, kind: str) -> None:
@@ -60,8 +63,11 @@ class ChangeLog:
             if self.lint_problems == 0:
                 parts.append("lint: clean")
             else:
-                problems = "problem" if self.lint_problems == 1 else "problems"
-                parts.append(f"lint: {self.lint_problems} {problems} remains")
+                problems = "problem remains" if self.lint_problems == 1 else "problems remain"
+                parts.append(f"lint: {self.lint_problems} {problems}")
+            if self.lint_existing:
+                problems = "problem was" if self.lint_existing == 1 else "problems were"
+                parts.append(f"{self.lint_existing} lint {problems} already there before this request")
         parts.append("the code has not been run or tested")
         return "; ".join(parts)
 
@@ -222,7 +228,7 @@ class Tools:
         existed = target.exists()
         old = self._read_text(target, path) if existed else ""
         if target.suffix == ".py":
-            content = _strip_trailing_whitespace(content)
+            content = _strip_trailing_whitespace(content, old)
         if content and not content.endswith("\n"):
             content += "\n"
         warning = self._apply(path, target, old, content)
@@ -251,7 +257,7 @@ class Tools:
                 new_text += "\n"
 
         if target.suffix == ".py":
-            new_text = _strip_trailing_whitespace(new_text)
+            new_text = _strip_trailing_whitespace(new_text, old[start:end])
         new = old[:start] + new_text + old[end:]
         warning = self._apply(path, target, old, new)
         self.log.record(path, "edited")
@@ -300,63 +306,49 @@ class Tools:
             diffs.append(diff or f"{rel}: changed and then changed back; no difference now")
         return "\n".join(diffs)
 
-    def lint(self, path: str = ".") -> str:
-        resolved_path = self._resolve(path)
-        relative_path = str(resolved_path.relative_to(self.root))
-
-        if resolved_path.is_file():
-            self._check_readable(resolved_path)
-            # Lint just the single file
-            pass
-        else:
-            # Directory case: build list of readable Python files
-            python_files = []
-            for p in self._walk(resolved_path, "*.py"):
-                python_files.append(str(p.relative_to(self.root)))
-
-            if not python_files:
-                return "No problems found."
-
-            # Use the list of readable Python files instead of the directory
-            result = subprocess.run(
-                [sys.executable, "-m", "ruff", "check", "--output-format=concise", "--no-cache", *self.lint_args] + python_files,
-                cwd=self.root,
-                capture_output=True,
-                text=True
-            )
-
-            if result.returncode == 0:
-                return "No problems found."
-            elif result.returncode == 1:
-                filtered_lines = []
-                for line in result.stdout.strip().split("\n"):
-                    if "fixable with the" not in line:
-                        line = line.replace("[*] ", "")
-                        filtered_lines.append(line)
-                return "\n".join(filtered_lines)
-            else:
-                raise ToolError(result.stderr.strip())
-
-        # Single file case (original behavior)
+    def _ruff(self, paths: list[str], text: str | None = None) -> list[str]:
+        """Run ruff on files, or on text as the content of paths[0], and return its problem lines."""
+        target = ["--stdin-filename", paths[0], "-"] if text is not None else paths
         result = subprocess.run(
-            [sys.executable, "-m", "ruff", "check", "--output-format=concise", "--no-cache", *self.lint_args, relative_path],
-            cwd=self.root,
-            capture_output=True,
-            text=True
+            [sys.executable, "-m", "ruff", "check", "--output-format=concise", "--no-cache", *self.lint_args, *target],
+            cwd=self.root, capture_output=True, text=True, input=text,
         )
-
-        if result.returncode == 0:
-            return "No problems found."
-        elif result.returncode == 1:
-            filtered_lines = []
-            for line in result.stdout.strip().split("\n"):
-                if "fixable with the" not in line:
-                    line = line.replace("[*] ", "")
-                    filtered_lines.append(line)
-            return "\n".join(filtered_lines)
-        else:
+        if result.returncode not in (0, 1):
             raise ToolError(result.stderr.strip())
+        return [line.replace("[*] ", "") for line in result.stdout.splitlines() if LINT_PROBLEM_RE.match(line)]
 
+    def lint(self, path: str = ".") -> str:
+        resolved = self._resolve(path)
+        if resolved.is_file():
+            self._check_readable(resolved)
+            files = [str(resolved.relative_to(self.root))]
+        else:
+            files = [str(p.relative_to(self.root)) for p in self._walk(resolved, "*.py")]
+        problems = self._ruff(files) if files else []
+        if not problems:
+            return "No problems found."
+        return "\n".join(problems) + f"\nFound {len(problems)} problem{'s' if len(problems) != 1 else ''}."
+
+    def new_lint_problems(self) -> tuple[list[str], int] | None:
+        """Lint the Python files changed during this request, separating new problems from ones already there.
+
+        Returns (new problem lines, number of problems that were already there), or None if no Python file changed.
+        """
+        changed = [rel for rel in self.log.originals
+                   if rel.endswith(".py") and (self.root / rel).exists() and self.mode.can_read(rel)]
+        if not changed:
+            return None
+        new, existing = [], 0
+        for rel in changed:
+            original = self.log.originals[rel]
+            before = Counter(_lint_key(p) for p in self._ruff([rel], original)) if original is not None else Counter()
+            for problem in self._ruff([rel]):
+                if before[_lint_key(problem)] > 0:
+                    before[_lint_key(problem)] -= 1
+                    existing += 1
+                else:
+                    new.append(problem)
+        return new, existing
 
 def _window_matches(lines: list[str], indexes: list[int], target: list[str]) -> list[tuple[int, int, int]]:
     """Match target against consecutive runs of the given line indexes. Returns (first, last, offset) per match."""
@@ -428,9 +420,24 @@ def _indent_offset(file_lines: list[str], target: list[str]) -> int | None:
     return offset or 0
 
 
-def _strip_trailing_whitespace(text: str) -> str:
-    # The model can't see trailing whitespace, so it can't remove it itself.
-    return "\n".join(line.rstrip() for line in text.split("\n"))
+def _strip_trailing_whitespace(new: str, old: str) -> str:
+    """Strip trailing whitespace from the lines of new that are new or changed compared with old.
+
+    The model can't see trailing whitespace, so it can't remove what it adds; lines it kept from old stay exactly
+    as they were, so whitespace that was already there is not touched.
+    """
+    old_lines, new_lines = old.split("\n"), new.split("\n")
+    matcher = difflib.SequenceMatcher(None, [line.rstrip() for line in old_lines], [line.rstrip() for line in new_lines], autojunk=False)
+    result = [line.rstrip() for line in new_lines]
+    for tag, i1, _, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            result[j1:j2] = old_lines[i1 : i1 + (j2 - j1)]
+    return "\n".join(result)
+
+
+def _lint_key(problem: str) -> str:
+    """The rule and message of a lint problem line, without its position, which moves when lines are added."""
+    return LINT_PROBLEM_RE.match(problem).group(1)
 
 
 def _reindent(text: str, offset: int) -> str:

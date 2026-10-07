@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 from typing import Callable
@@ -6,7 +7,7 @@ from ollama import Client, ResponseError
 
 from config import Config
 from session import Session
-from tools import SCHEMAS, WRITE_TOOLS, ChangeLog, ConfirmWrite, Tools
+from tools import SCHEMAS, WRITE_TOOLS, ChangeLog, ConfirmWrite, ToolError, Tools
 
 SYSTEM_PROMPT = """You are Tinker, a coding assistant working inside the workspace: {root}
 
@@ -71,13 +72,15 @@ PROGRESS_REMINDER = (
 )
 
 MAX_LINT_ROUNDS = 2
-LINT_PROBLEM_RE = re.compile(r"^\S+:\d+:\d+: ")
 LINT_REMINDER = (
-    "[Note from the agent, not the user. Lint found problems in files you changed:\n{problems}\n"
-    "Fix the problems your changes caused. If a problem was already there before your changes, "
-    "mention it in your final answer and leave it.]"
+    "[Note from the agent, not the user. Lint found problems in the code you changed:\n{problems}\n"
+    "Fix these problems.]"
 )
 
+REPEAT_NOTE = (
+    "\n[Note from the agent: this call and its result are the same as your previous call, so nothing has "
+    "changed. Do not repeat it. Continue with the task, or give your final answer without calling any tools.]"
+)
 CALL_FORMAT = (
     "Give every required parameter inside the <function=...> block, for example "
     "<parameter=path>\nCLAUDE.md\n</parameter>."
@@ -105,6 +108,10 @@ def _coerce(tool: str, param: str, value: str):
     return value
 
 
+def _call_key(call: dict) -> tuple[str, str]:
+    return call["function"]["name"], json.dumps(call["function"]["arguments"] or {}, sort_keys=True)
+
+
 def missing_arguments(tool_calls: list[dict]) -> list[str]:
     """Describe tool calls that lack required parameters, e.g. ["read_file is missing path"]."""
     problems = []
@@ -121,8 +128,9 @@ def extract_text_tool_calls(content: str) -> tuple[str, list[dict]]:
         {"function": {"name": name, "arguments": {p: _coerce(name, p, v) for p, v in PARAMETER_RE.findall(body)}}}
         for name, body in FUNCTION_RE.findall(content)
     ]
-    text = content[: content.find("<function=")].replace("<tool_call>", "").strip() if calls else content
-    return text, calls
+    text = content[: content.find("<function=")] if calls else content
+    # A reply can also end with an opening tag the model never completed.
+    return text.replace("<tool_call>", "").strip(), calls
 
 
 class Agent:
@@ -188,17 +196,19 @@ class Agent:
         return self.tools.log.summary()
 
     def _lint_changed_files(self) -> list[str] | None:
-        """Lint changed Python files and return problem lines."""
-        py_files = [path for path in self.tools.log.files if path.endswith(".py")]
-        if not py_files:
-            return None
+        """Lint problems introduced during this request, or None if no Python file changed.
 
-        problems = []
-        for path in py_files:
-            output = self.tools.run("lint", {"path": path})
-            for line in output.split("\n"):
-                if LINT_PROBLEM_RE.match(line):
-                    problems.append(line)
+        Problems that were already in the files are only counted for the report: shown to the model, it tends to
+        fix them, which is a change nobody asked for.
+        """
+        try:
+            result = self.tools.new_lint_problems()
+        except ToolError as e:
+            self.on_notice(f"Lint failed: {e}")
+            return None
+        if result is None:
+            return None
+        problems, self.tools.log.lint_existing = result
         return problems
 
     def _next_reply(self, tools: list[dict]) -> tuple[str, list[dict]]:
@@ -252,8 +262,15 @@ class Agent:
         tool_names = {t["function"]["name"] for t in tools}
         lint_rounds = 0
 
+        previous_call = (None, None, None)
         for _ in range(self.config.max_iterations):
             content, tool_calls = self._next_reply(tools)
+            if (content and len(tool_calls) == 1 and tool_calls[0]["function"]["name"] not in WRITE_TOOLS
+                    and _call_key(tool_calls[0]) == previous_call[:2]):
+                # The model keeps re-running the same read-only check alongside a finished answer; its result
+                # cannot have changed, so take the text as the final answer instead of looping.
+                self.on_notice(f"Repeated {tool_calls[0]['function']['name']} call; taking the reply as the final answer")
+                tool_calls = []
             self._add({"role": "assistant", "content": content, "tool_calls": tool_calls})
 
             if not tool_calls:
@@ -276,6 +293,10 @@ class Agent:
                     result = f"Error: {problems[0]}. {CALL_FORMAT}"
                 else:
                     result = self.tools.run(name, args)
+                this_call = (*_call_key(call), result)
+                if this_call == previous_call:
+                    result += REPEAT_NOTE
+                previous_call = this_call
                 self._add({"role": "tool", "tool_name": name, "content": result})
 
         return f"[Stopped after {self.config.max_iterations} iterations without a final answer]"
