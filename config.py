@@ -11,6 +11,11 @@ class Config:
     temperature: float
     max_iterations: int
     max_tool_output_chars: int
+    auto_approve_writes: bool
+    sessions_dir: Path
+
+    def __post_init__(self):
+        self.sessions_dir = Path(self.sessions_dir).expanduser()
 
 
 def load_config(path: Path) -> Config:

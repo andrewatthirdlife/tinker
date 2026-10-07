@@ -1,8 +1,10 @@
 {
   "host": "http://192.168.0.174:11434",
   "model": "qwen3-coder:latest",
-  "num_ctx": 32768,
+  "num_ctx": 65536,
   "temperature": 0.2,
-  "max_iterations": 25,
-  "max_tool_output_chars": 20000
+  "max_iterations": 40,
+  "max_tool_output_chars": 20000,
+  "auto_approve_writes": false,
+  "sessions_dir": "~/.agent/sessions"
 }
