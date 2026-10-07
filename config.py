@@ -1,8 +1,15 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from permissions import Mode
+
+
+@dataclass
+class CommandSettings:
+    """Settings for running commands in the sandbox."""
+    timeout_seconds: int = 120
+    max_output_chars: int = 20000
 
 
 @dataclass
@@ -17,6 +24,7 @@ class Config:
     lint_args: list[str]
     default_mode: str
     modes: dict[str, Mode]
+    commands: CommandSettings = field(default_factory=CommandSettings)
 
     def __post_init__(self):
         self.sessions_dir = Path(self.sessions_dir).expanduser()
@@ -34,6 +42,13 @@ class Config:
         # Validate default_mode
         if self.default_mode not in self.modes:
             raise ValueError(f"default_mode {self.default_mode!r} is not a defined mode")
+
+        # Convert commands dict to CommandSettings object
+        if isinstance(self.commands, dict):
+            try:
+                self.commands = CommandSettings(**self.commands)
+            except TypeError as e:
+                raise ValueError(f"commands in config: {e}")
 
 
 def load_config(path: Path) -> Config:
