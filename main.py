@@ -54,31 +54,50 @@ def run_once(agent: Agent, session: Session, prompt: str) -> int:
     return exit_code
 
 
-COMMANDS = {
-    "plan": "plan mode, the agent cannot change files",
-    "edit": "edit mode, the agent can change files with your approval",
-    "auto_approve": "toggle auto-approval of file changes (this run only)",
-}
+def help_text(config: Config) -> str:
+    lines = [
+        "  /mode: list the modes",
+    ]
+    for name, mode in config.modes.items():
+        lines.append(f"  /{name}: switch to {name} mode ({mode.description})")
+    lines.append("  /auto_approve: toggle auto-approval of file changes (this run only)")
+    return "\n".join(lines)
 
 
-def help_text() -> str:
-    return "\n".join(f"  /{name}: {description}" for name, description in COMMANDS.items())
+def _switch_mode(agent: Agent, config: Config, mode_name: str) -> None:
+    """Switch the agent to another mode, or explain why not."""
+    if mode_name not in config.modes:
+        print(f"Unknown mode {mode_name!r}. /mode lists the modes.")
+        return
+    if mode_name == agent.mode:
+        print(f"Already in {mode_name} mode.")
+        return
+    agent.set_mode(mode_name)
+    print(f"Switched to {mode_name} mode.")
 
 
-def handle_command(command: str, agent: Agent, config: Config) -> None:
-    if command not in COMMANDS:
+def handle_command(command: str, agent: Agent, config: Config, options: RunOptions) -> None:
+    words = command.split()
+    if not words:
         print(f"Unknown command /{command}")
-        print(help_text())
+        print(help_text(config))
         return
-    if command == agent.mode:
-        print(f"Already in {command} mode.")
-        return
-    if command == "auto_approve":
-        config.auto_approve_writes = not config.auto_approve_writes
-        print(f"Auto-approval of file changes is now {'on' if config.auto_approve_writes else 'off'}.")
+
+    if words[0] == "mode":
+        if len(words) == 1:
+            for name, mode in config.modes.items():
+                prefix = "* " if name == agent.mode else "  "
+                print(f"{prefix}{name}: {mode.description} (approval: {mode.approve})")
+        else:
+            _switch_mode(agent, config, words[1])
+    elif words[0] in config.modes:
+        _switch_mode(agent, config, words[0])
+    elif words[0] == "auto_approve":
+        options.auto_approve = not options.auto_approve
+        print(f"Auto-approval of file changes is now {'on' if options.auto_approve else 'off'}.")
     else:
-        agent.set_mode(command)
-        print(f"Switched to {command} mode.")
+        print(f"Unknown command /{command}")
+        print(help_text(config))
 
 
 def list_sessions(sessions_dir: Path) -> None:
@@ -95,12 +114,15 @@ def main() -> None:
     parser.add_argument("--config", default=Path(__file__).parent / "config.json", type=Path)
     parser.add_argument("--resume", metavar="SESSION_ID", help="Continue a previous session")
     parser.add_argument("--sessions", action="store_true", help="List previous sessions and exit")
-    parser.add_argument("--mode", choices=["plan", "edit", "docs", "feature"], help="Starting mode (default: edit for new sessions, the saved mode when resuming)")
+    parser.add_argument("--mode", help="Starting mode: one of the modes in the config (default: the config's default_mode for new sessions, the saved mode when resuming)")
     parser.add_argument("-p", "--prompt", metavar="MESSAGE", help="Run one request and exit ('-' reads it from stdin). Uses plan mode unless --mode edit is given, which also auto-approves changes.")
     args = parser.parse_args()
 
     config = load_config(args.config)
     options = RunOptions()
+
+    if args.mode is not None and args.mode not in config.modes:
+        parser.error(f"unknown mode {args.mode!r}; the modes are: {', '.join(config.modes)}")
 
     if args.sessions:
         list_sessions(config.sessions_dir)
@@ -145,7 +167,7 @@ def main() -> None:
         last = next((m["content"] for m in reversed(session.messages) if m["role"] == "assistant" and m["content"]), "")
         print(f"Resumed with {len(session.messages)} messages. Last answer:\n\n{last}\n")
     print("Type a question, or 'exit' to quit.")
-    print(help_text())
+    print(help_text(config))
     print(f"\nAuto-approval of file changes is {'on' if options.auto_approve else 'off'}.\n")
 
     while True:
@@ -159,7 +181,7 @@ def main() -> None:
         if not question:
             continue
         if question.startswith("/"):
-            handle_command(question[1:], agent, options)
+            handle_command(question[1:], agent, config, options)
             continue
         try:
             print(f"\n{agent.ask(question)}\n")
