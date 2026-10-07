@@ -45,6 +45,8 @@ class Mode:
     write: list[str] = field(default_factory=list)
     deny_write: list[str] = field(default_factory=list)
     approve: str = "ask"
+    run: list[str] = field(default_factory=list)
+    approve_commands: str = "ask"
     instructions: str = ""
 
     def can_read(self, path: str) -> bool:
@@ -89,7 +91,21 @@ class Mode:
     def __post_init__(self):
         if self.approve not in ("ask", "auto"):
             raise ValueError(f"Mode {self.name!r}: approve must be 'ask' or 'auto'")
+        if self.approve_commands not in ("ask", "auto"):
+            raise ValueError(f"Mode {self.name!r}: approve_commands must be 'ask' or 'auto'")
 
+    def can_run(self, command: str) -> bool:
+        """Check if a command is allowed to run."""
+        for pattern in self.run:
+            if fnmatch.fnmatchcase(command, pattern):
+                return True
+        return False
+
+    def describe_commands(self) -> str:
+        """Describe what commands this mode may run."""
+        if not self.run:
+            return "You cannot run commands."
+        return "You can run commands matching: " + ", ".join(self.run) + "."
 
 # Commands run in a sandbox (sandbox.py) whose file rules can only grant whole directories or single files.
 # The functions below turn a mode's patterns into such rules.
