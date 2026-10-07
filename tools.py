@@ -2,6 +2,7 @@ import ast
 import difflib
 import re
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -19,11 +20,45 @@ class ToolError(Exception):
     pass
 
 
+class Rejected(ToolError):
+    pass
+
+
+@dataclass
+class ChangeLog:
+    """What happened to files during one request, so it can be reported accurately."""
+
+    files: dict[str, str] = field(default_factory=dict)  # path -> "created", "edited" or "rewritten"
+    failed: int = 0
+    rejected: int = 0
+
+    def record(self, path: str, kind: str) -> None:
+        # Keep the most significant change: a new file stays "created"; an edited file can become "rewritten".
+        if self.files.get(path) in (None, "edited"):
+            self.files[path] = kind
+
+    def summary(self) -> str | None:
+        if not (self.files or self.failed or self.rejected):
+            return None
+        parts = []
+        if self.files:
+            parts.append("changed " + ", ".join(f"{path} ({kind})" for path, kind in self.files.items()))
+        else:
+            parts.append("no files changed")
+        if self.failed:
+            parts.append(f"{self.failed} failed edit{'s' if self.failed != 1 else ''}")
+        if self.rejected:
+            parts.append(f"{self.rejected} change{'s' if self.rejected != 1 else ''} rejected by the user")
+        parts.append("the code has not been run or tested")
+        return "; ".join(parts)
+
+
 class Tools:
     def __init__(self, root: Path, max_output_chars: int, confirm_write: ConfirmWrite):
         self.root = root.resolve()
         self.max_output_chars = max_output_chars
         self.confirm_write = confirm_write
+        self.log = ChangeLog()
         self.registry = {
             "list_files": self.list_files,
             "read_file": self.read_file,
@@ -39,9 +74,14 @@ class Tools:
             return f"Error: unknown tool '{name}'"
         try:
             output = func(**args)
-        except TypeError as e:
-            return f"Error: bad arguments for {name}: {e}"
-        except ToolError as e:
+        except Rejected as e:
+            self.log.rejected += 1
+            return f"Error: {e}"
+        except (TypeError, ToolError) as e:
+            if name in WRITE_TOOLS:
+                self.log.failed += 1
+            if isinstance(e, TypeError):
+                return f"Error: bad arguments for {name}: {e}"
             return f"Error: {e}"
         if len(output) > self.max_output_chars:
             output = output[: self.max_output_chars] + f"\n... [truncated, {len(output)} chars total]"
@@ -92,7 +132,7 @@ class Tools:
         ))
         rejection = self.confirm_write(path, diff)
         if rejection is not None:
-            raise ToolError(rejection)
+            raise Rejected(rejection)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(new)
         if target.suffix == ".py":
@@ -150,6 +190,7 @@ class Tools:
         if content and not content.endswith("\n"):
             content += "\n"
         warning = self._apply(path, target, old, content)
+        self.log.record(path, "rewritten" if existed else "created")
         result = f"{'Overwrote' if existed else 'Created'} {path} ({len(content.splitlines())} lines)."
         return f"{result}\n{warning}" if warning else result
 
@@ -175,6 +216,7 @@ class Tools:
 
         new = old[:start] + new_text + old[end:]
         warning = self._apply(path, target, old, new)
+        self.log.record(path, "edited")
 
         first = old[:start].count("\n") + 1
         last = first + new_text.count("\n")

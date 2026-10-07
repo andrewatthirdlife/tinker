@@ -120,6 +120,8 @@ def main() -> None:
             print(f"\nError: {e}\nIs the Ollama machine asleep? Wake it up and ask again.\n")
         except ResponseError as e:
             print(f"\nOllama error: {e.error}\nThe session is saved; you can ask again or rephrase.\n")
+        if summary := agent.change_summary():
+            print(f"\033[33m[{summary}]\033[0m\n")
 
     print(f"Resume with: --resume {session.id}")
 

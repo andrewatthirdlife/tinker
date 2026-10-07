@@ -6,7 +6,7 @@ from ollama import Client, ResponseError
 
 from config import Config
 from session import Session
-from tools import SCHEMAS, WRITE_TOOLS, ConfirmWrite, Tools
+from tools import SCHEMAS, WRITE_TOOLS, ChangeLog, ConfirmWrite, Tools
 
 SYSTEM_PROMPT = """You are a coding assistant working inside the workspace: {root}
 
@@ -70,6 +70,12 @@ RETRY_TEMPERATURE = 0.7
 MALFORMED_CALL_HINT = (
     "Your previous response could not be parsed because the tool call was malformed. "
     "Try again, making sure every <parameter=...> is closed with </parameter> before </function>."
+)
+
+PROGRESS_REMINDER = (
+    "[Note from the agent, not the user. So far in this task: {summary}. "
+    "Continue if the task is not finished. In your final answer, mention any failed edits and any files "
+    "that were rewritten in full, and say that the code has not been run.]"
 )
 
 FUNCTION_RE = re.compile(r"<function=([\w-]+)>(.*?)</function>", re.DOTALL)
@@ -140,9 +146,18 @@ class Agent:
         self.messages.append(message)
         self.session.save(self.messages)
 
+    def change_summary(self) -> str | None:
+        """Facts about file changes during the last request, independent of what the model claims."""
+        return self.tools.log.summary()
+
     def _chat(self, tools: list[dict]):
         """Call the model, retrying when Ollama fails to parse the model's tool call (HTTP 500)."""
-        messages, temperature = self.messages, self.config.temperature
+        # Reminders are added for this call only and are not kept in the history.
+        reminders = []
+        if summary := self.change_summary():
+            # Placed last so the model sees it right before writing its answer, unlike the system prompt.
+            reminders.append({"role": "user", "content": PROGRESS_REMINDER.format(summary=summary)})
+        messages, temperature = [*self.messages, *reminders], self.config.temperature
         for attempt in range(MAX_CHAT_RETRIES + 1):
             try:
                 return self.client.chat(
@@ -156,11 +171,12 @@ class Agent:
                     raise
                 self.on_notice(f"Ollama error, retrying ({attempt + 1}/{MAX_CHAT_RETRIES}): {e.error}")
                 # The hint is only for the retry; it is not kept in the history.
-                messages = [*self.messages, {"role": "user", "content": MALFORMED_CALL_HINT}]
+                messages = [*self.messages, *reminders, {"role": "user", "content": MALFORMED_CALL_HINT}]
                 temperature = max(temperature, RETRY_TEMPERATURE)
 
     def ask(self, question: str) -> str:
         self._add({"role": "user", "content": question})
+        self.tools.log = ChangeLog()
 
         tools = self._available_tools()
         tool_names = {t["function"]["name"] for t in tools}
