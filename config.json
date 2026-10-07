@@ -6,5 +6,5 @@
   "max_iterations": 40,
   "max_tool_output_chars": 20000,
   "auto_approve_writes": false,
-  "sessions_dir": "~/.agent/sessions"
+  "sessions_dir": "~/.tinker/sessions"
 }

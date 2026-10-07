@@ -62,7 +62,7 @@ def list_sessions(sessions_dir: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Coding agent using Ollama")
+    parser = argparse.ArgumentParser(description="Tinker: a coding agent using Ollama")
     parser.add_argument("workspace", nargs="?", help="Directory the agent works in (default: current directory)")
     parser.add_argument("--config", default=Path(__file__).parent / "config.json", type=Path)
     parser.add_argument("--resume", metavar="SESSION_ID", help="Continue a previous session")
@@ -93,7 +93,7 @@ def main() -> None:
 
     agent = Agent(config, session, on_tool_call=print_tool_call, on_notice=print_notice, confirm_write=confirm_write)
 
-    print(f"Session: {session.id}  Model: {config.model}  Workspace: {session.workspace}")
+    print(f"Tinker Session: {session.id}  Model: {config.model}  Workspace: {session.workspace}")
     if args.resume:
         last = next((m["content"] for m in reversed(session.messages) if m["role"] == "assistant" and m["content"]), "")
         print(f"Resumed with {len(session.messages)} messages. Last answer:\n\n{last}\n")
