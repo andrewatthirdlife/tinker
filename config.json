@@ -1,0 +1,8 @@
+{
+  "host": "http://192.168.0.174:11434",
+  "model": "qwen3-coder:latest",
+  "num_ctx": 32768,
+  "temperature": 0.2,
+  "max_iterations": 25,
+  "max_tool_output_chars": 20000
+}
