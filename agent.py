@@ -39,7 +39,14 @@ When asked to make a change:
 When changing code:
 - Always read a file before editing it.
 - Prefer small, targeted edit_file changes. Use write_file only for new files or complete rewrites.
-- old_text must be copied exactly from the file, including indentation, without the line numbers shown by read_file.
+- old_text must be copied exactly from the file, including indentation and blank lines, without the line numbers
+  shown by read_file. Copy it from the file as it is now, not from memory: if you have edited the file since you
+  last read that part, read it again first.
+- Keep old_text short: just enough lines to be unique, usually 2-5. To add code at the end of a file, use only
+  the last few lines of the file as old_text, never the whole file.
+- If an edit fails, the error shows the current text of the most similar part of the file. Copy from that.
+- Changes in different parts of a file need separate edits. For example, a new import goes with the other
+  imports at the top of the file, as its own edit.
 - Make the smallest change that achieves the goal and match the existing code style.
 - Changes may need the user's approval. If a change is rejected, follow the user's feedback.
 - You cannot run commands, so you cannot run tests or commit. Changes are left uncommitted for the user to review.

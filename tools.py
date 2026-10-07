@@ -10,6 +10,8 @@ IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_c
 MAX_LIST_ENTRIES = 500
 MAX_SEARCH_MATCHES = 200
 EDIT_CONTEXT_LINES = 3
+NOT_FOUND_MIN_SIMILARITY = 0.4
+NOT_FOUND_MAX_LINES = 30
 WRITE_TOOLS = {"edit_file", "write_file"}
 
 # Receives (path, diff); returns None to approve, or a rejection message for the model.
@@ -227,25 +229,24 @@ class Tools:
         return f"{result}\n{warning}" if warning else result
 
     def _find_loose_match(self, text: str, old_text: str) -> tuple[int, int, int]:
-        """Find old_text ignoring trailing whitespace and a consistent indentation difference.
+        """Find old_text ignoring trailing whitespace, a consistent indentation difference and,
+        failing that, the number of blank lines.
 
         Returns (start, end, offset) where offset is the indentation to add to new_text.
         """
         lines = text.splitlines(keepends=True)
         target = old_text.splitlines()
-        n = len(target)
-        hits = []
-        for i in range(len(lines) - n + 1):
-            offset = _indent_offset(lines[i : i + n], target)
-            if offset is not None:
-                hits.append((i, offset))
+        hits = _window_matches(lines, list(range(len(lines))), target)
         if not hits:
-            raise ToolError("old_text not found; re-read the file and copy the exact text, including indentation")
+            nonblank = [i for i, line in enumerate(lines) if line.strip()]
+            hits = _window_matches(lines, nonblank, [t for t in target if t.strip()])
+        if not hits:
+            raise ToolError(_not_found_message(lines, target))
         if len(hits) > 1:
             raise ToolError(f"old_text matches {len(hits)} times; include more surrounding lines to make it unique")
-        i, offset = hits[0]
-        start = sum(len(line) for line in lines[:i])
-        return start, start + sum(len(line) for line in lines[i : i + n]), offset
+        first, last, offset = hits[0]
+        start = sum(len(line) for line in lines[:first])
+        return start, start + sum(len(line) for line in lines[first : last + 1]), offset
 
     def _git(self, *args: str) -> str:
         result = subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True)
@@ -263,6 +264,59 @@ class Tools:
         if not status and not diff:
             return "No uncommitted changes."
         return f"Status (?? = untracked, M = modified, A = added, D = deleted):\n{status}\nDiff:\n{diff or '(none)'}"
+
+
+def _window_matches(lines: list[str], indexes: list[int], target: list[str]) -> list[tuple[int, int, int]]:
+    """Match target against consecutive runs of the given line indexes. Returns (first, last, offset) per match."""
+    n = len(target)
+    if n == 0:
+        return []
+    hits = []
+    for j in range(len(indexes) - n + 1):
+        run = indexes[j : j + n]
+        offset = _indent_offset([lines[k] for k in run], target)
+        if offset is not None:
+            hits.append((run[0], run[-1], offset))
+    return hits
+
+
+def _not_found_message(lines: list[str], target: list[str]) -> str:
+    """Explain a failed match by showing the most similar part of the file as it is now."""
+    n = len(target)
+    stripped = [line.strip() for line in lines]
+    wanted = [t.strip() for t in target]
+    best_ratio, best = 0.0, 0
+    for i in range(max(len(lines) - n + 1, 1)):
+        ratio = difflib.SequenceMatcher(None, stripped[i : i + n], wanted).ratio()
+        if ratio > best_ratio:
+            best_ratio, best = ratio, i
+    if best_ratio < NOT_FOUND_MIN_SIMILARITY:
+        return "old_text not found and nothing similar is in the file. Read the file again; it may have changed."
+
+    # Align the window so its first matching line lines up with the same line in old_text.
+    a, b, _ = difflib.SequenceMatcher(None, stripped[best : best + n], wanted).get_matching_blocks()[0]
+    best = max(best + a - b, 0)
+    window = [line.rstrip("\n") for line in lines[best : best + n]]
+    first, last = best + 1, best + len(window)
+    numbered = "\n".join(f"{first + k:>5}\t{line}" for k, line in enumerate(window[:NOT_FOUND_MAX_LINES]))
+    message = f"old_text not found. The most similar part of the file is lines {first}-{last}, which currently read:\n{numbered}"
+    if difference := _first_difference(window, target, first):
+        message += f"\n{difference}"
+    return message + "\nCopy old_text exactly from the current file (without the line numbers), using only a few lines."
+
+
+def _first_difference(window: list[str], target: list[str], first_line: int) -> str:
+    opcodes = difflib.SequenceMatcher(None, [w.strip() for w in window], [t.strip() for t in target]).get_opcodes()
+    for tag, i1, _, j1, _ in opcodes:
+        if tag != "equal":
+            actual = repr(window[i1]) if i1 < len(window) else "nothing more"
+            expected = repr(target[j1]) if j1 < len(target) else "nothing more"
+            return f"First difference at line {first_line + i1}: the file has {actual} but old_text has {expected}."
+    # Same text apart from whitespace, so the indentation must differ.
+    for k, (actual, expected) in enumerate(zip(window, target)):
+        if actual.rstrip() != expected.rstrip():
+            return f"First difference at line {first_line + k} (indentation): the file has {actual!r} but old_text has {expected!r}."
+    return ""
 
 
 def _indent_offset(file_lines: list[str], target: list[str]) -> int | None:
@@ -364,7 +418,8 @@ SCHEMAS = [
             "name": "edit_file",
             "description": (
                 "Replace one exact piece of text in an existing file. old_text must match the file exactly "
-                "(including indentation) and appear only once. Do not include line numbers from read_file."
+                "(including indentation) and appear only once. Keep old_text short: just enough lines to be unique. "
+                "Do not include line numbers from read_file."
             ),
             "parameters": {
                 "type": "object",
