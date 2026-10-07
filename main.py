@@ -1,4 +1,5 @@
 import argparse
+import sys
 from pathlib import Path
 
 from ollama import ResponseError
@@ -10,11 +11,11 @@ from session import Session
 
 def print_tool_call(name: str, args: dict) -> None:
     arg_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
-    print(f"  → {name}({arg_str})")
+    print(f"  → {name}({arg_str})", file=sys.stderr)
 
 
 def print_notice(text: str) -> None:
-    print(f"  ! {text}")
+    print(f"  ! {text}", file=sys.stderr)
 
 
 def colorize_diff(diff: str) -> str:
@@ -24,6 +25,27 @@ def colorize_diff(diff: str) -> str:
         color = "" if line.startswith(("+++", "---")) else colors.get(line[:1], "")
         lines.append(f"{color}{line}\033[0m" if color else line)
     return "\n".join(lines)
+
+
+def run_once(agent: Agent, session: Session, prompt: str) -> int:
+    print(f"[session: {session.id}]", file=sys.stderr)
+    exit_code = 0
+    try:
+        answer = agent.ask(prompt)
+        print(answer)
+    except ConnectionError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("Is the Ollama machine asleep? Wake it up and ask again.", file=sys.stderr)
+        exit_code = 1
+    except ResponseError as e:
+        print(f"Ollama error: {e.error}", file=sys.stderr)
+        exit_code = 1
+
+    summary = agent.change_summary()
+    if summary is not None:
+        print(f"[{summary}]", file=sys.stderr)
+
+    return exit_code
 
 
 COMMANDS = {
@@ -67,6 +89,8 @@ def main() -> None:
     parser.add_argument("--config", default=Path(__file__).parent / "config.json", type=Path)
     parser.add_argument("--resume", metavar="SESSION_ID", help="Continue a previous session")
     parser.add_argument("--sessions", action="store_true", help="List previous sessions and exit")
+    parser.add_argument("--mode", choices=["plan", "edit"], help="Starting mode (default: edit for new sessions, the saved mode when resuming)")
+    parser.add_argument("-p", "--prompt", metavar="MESSAGE", help="Run one request and exit ('-' reads it from stdin). Uses plan mode unless --mode edit is given, which also auto-approves changes.")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -80,6 +104,12 @@ def main() -> None:
     else:
         session = Session.create(config.sessions_dir, Path(args.workspace or "."))
 
+    if args.prompt is not None:
+        if args.mode is None:
+            args.mode = "plan"
+        if args.mode == "edit":
+            config.auto_approve_writes = True
+
     def confirm_write(path: str, diff: str) -> str | None:
         if config.auto_approve_writes:
             return None
@@ -92,6 +122,13 @@ def main() -> None:
         return f"The user rejected this change with feedback: {answer}"
 
     agent = Agent(config, session, on_tool_call=print_tool_call, on_notice=print_notice, confirm_write=confirm_write)
+
+    if args.mode is not None and args.mode != agent.mode:
+        agent.set_mode(args.mode)
+
+    if args.prompt is not None:
+        prompt = sys.stdin.read().strip() if args.prompt == "-" else args.prompt
+        sys.exit(run_once(agent, session, prompt))
 
     print(f"Tinker Session: {session.id}  Model: {config.model}  Workspace: {session.workspace}")
     if args.resume:
