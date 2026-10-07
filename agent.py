@@ -44,7 +44,7 @@ When changing code:
 - You cannot run commands, so you cannot run tests or commit. Changes are left uncommitted for the user to review.
 
 Before your final answer after changing code:
-- Call git_changes and check the diff against each thing the user asked for.
+- Call review_changes and check the diff against each thing the user asked for.
 - Look for mistakes in the diff: missing imports, names that are used but not defined, leftover unused code, and
   anything the user asked you not to do.
 - Fix any problems you find before answering.
@@ -55,14 +55,6 @@ Your final answer must be accurate, not reassuring:
 - Report anything that went wrong: failed edits, rejected changes, requirements you did not meet, and anything you are unsure about.
 - Do not use praise or filler such as "Perfect!", "Excellent!" or "All requirements have been met".
 - Be concise and direct."""
-
-MODE_PROMPTS = {
-    "edit": "Current mode: edit. You can change files with edit_file and write_file when the user asks for a change.",
-    "plan": (
-        "Current mode: plan. edit_file and write_file are unavailable, so you cannot change files. "
-        "Answer with plans only. If the user asks for a change, describe it and tell them to switch to edit mode with /edit."
-    ),
-}
 
 MAX_CHAT_RETRIES = 2
 RETRY_TEMPERATURE = 0.7
@@ -85,6 +77,16 @@ LINT_REMINDER = (
     "mention it in your final answer and leave it.]"
 )
 
+CALL_FORMAT = (
+    "Give every required parameter inside the <function=...> block, for example "
+    "<parameter=path>\nCLAUDE.md\n</parameter>."
+)
+MISSING_ARGS_HINT = (
+    "[Note from the agent, not the user. Your last reply could not be used because a tool call was missing "
+    "required parameters: {problems}. Make the call again. " + CALL_FORMAT + "]"
+)
+REQUIRED_PARAMS = {s["function"]["name"]: s["function"]["parameters"].get("required", []) for s in SCHEMAS}
+
 FUNCTION_RE = re.compile(r"<function=([\w-]+)>(.*?)</function>", re.DOTALL)
 PARAMETER_RE = re.compile(r"<parameter=([\w-]+)>\n?(.*?)\n?</parameter>", re.DOTALL)
 PARAM_TYPES = {
@@ -100,6 +102,16 @@ def _coerce(tool: str, param: str, value: str):
         except ValueError:
             pass
     return value
+
+
+def missing_arguments(tool_calls: list[dict]) -> list[str]:
+    """Describe tool calls that lack required parameters, e.g. ["read_file is missing path"]."""
+    problems = []
+    for call in tool_calls:
+        name, args = call["function"]["name"], call["function"]["arguments"] or {}
+        if missing := [p for p in REQUIRED_PARAMS.get(name, []) if p not in args]:
+            problems.append(f"{name} is missing {', '.join(missing)}")
+    return problems
 
 
 def extract_text_tool_calls(content: str) -> tuple[str, list[dict]]:
@@ -123,7 +135,9 @@ class Agent:
     ):
         self.config = config
         self.client = Client(host=config.host)
-        self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write, config.lint_args)
+        if session.mode not in config.modes:
+            session.mode = config.default_mode
+        self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write, config.lint_args, config.modes[session.mode])
         self.on_tool_call = on_tool_call
         self.on_notice = on_notice
         self.session = session
@@ -134,18 +148,33 @@ class Agent:
     def mode(self) -> str:
         return self.session.mode
 
+    def _mode_prompt(self) -> str:
+        """Build the mode section of the system prompt from the current Mode."""
+        mode = self.config.modes[self.mode]
+        lines = [
+            f"Current mode: {mode.name} ({mode.description}).",
+            mode.describe_reads(),
+            mode.describe_writes(),
+        ]
+        if mode.instructions:
+            lines.append(mode.instructions)
+        if not mode.write:
+            lines.append("Answer with plans only. If the user asks for a change, describe it and tell them to switch to a mode that allows it (/mode lists the modes).")
+        return "\n".join(lines)
+
     def set_mode(self, mode: str) -> None:
         self.session.mode = mode
+        self.tools.mode = self.config.modes[mode]
         self.messages[0] = self._system_message()
         # Also note the switch in the history, where the model is more likely to notice it.
-        self._add({"role": "user", "content": f"[The user switched to {mode} mode. {MODE_PROMPTS[mode]}]"})
+        self._add({"role": "user", "content": f"[The user switched to {mode} mode. {self._mode_prompt()}]"})
 
     def _system_message(self) -> dict:
-        prompt = SYSTEM_PROMPT.format(root=self.session.workspace, mode_prompt=MODE_PROMPTS[self.mode])
+        prompt = SYSTEM_PROMPT.format(root=self.session.workspace, mode_prompt=self._mode_prompt())
         return {"role": "system", "content": prompt}
 
     def _available_tools(self) -> list[dict]:
-        if self.mode == "edit":
+        if self.config.modes[self.mode].write:
             return SCHEMAS
         return [s for s in SCHEMAS if s["function"]["name"] not in WRITE_TOOLS]
 
@@ -171,14 +200,33 @@ class Agent:
                     problems.append(line)
         return problems
 
-    def _chat(self, tools: list[dict]):
+    def _next_reply(self, tools: list[dict]) -> tuple[str, list[dict]]:
+        """Get the model's next reply, asking again if a tool call is missing required parameters.
+
+        A reply like that is never added to the history: the model copies bad calls it can see.
+        """
+        hint, temperature = [], self.config.temperature
+        for attempt in range(MAX_CHAT_RETRIES + 1):
+            message = self._chat(tools, hint, temperature).message
+            tool_calls = [c.model_dump() for c in message.tool_calls or []]
+            content = message.content or ""
+            if not tool_calls:
+                content, tool_calls = extract_text_tool_calls(content)
+            problems = missing_arguments(tool_calls)
+            if not problems or attempt == MAX_CHAT_RETRIES:
+                return content, tool_calls
+            self.on_notice(f"Tool call without required parameters ({'; '.join(problems)}), asking again ({attempt + 1}/{MAX_CHAT_RETRIES})")
+            hint = [{"role": "user", "content": MISSING_ARGS_HINT.format(problems="; ".join(problems))}]
+            temperature = max(temperature, RETRY_TEMPERATURE)
+
+    def _chat(self, tools: list[dict], hint: list[dict], temperature: float):
         """Call the model, retrying when Ollama fails to parse the model's tool call (HTTP 500)."""
         # Reminders are added for this call only and are not kept in the history.
         reminders = []
         if summary := self.change_summary():
             # Placed last so the model sees it right before writing its answer, unlike the system prompt.
             reminders.append({"role": "user", "content": PROGRESS_REMINDER.format(summary=summary)})
-        messages, temperature = [*self.messages, *reminders], self.config.temperature
+        messages = [*self.messages, *reminders, *hint]
         for attempt in range(MAX_CHAT_RETRIES + 1):
             try:
                 return self.client.chat(
@@ -192,7 +240,7 @@ class Agent:
                     raise
                 self.on_notice(f"Ollama error, retrying ({attempt + 1}/{MAX_CHAT_RETRIES}): {e.error}")
                 # The hint is only for the retry; it is not kept in the history.
-                messages = [*self.messages, *reminders, {"role": "user", "content": MALFORMED_CALL_HINT}]
+                messages = [*self.messages, *reminders, *hint, {"role": "user", "content": MALFORMED_CALL_HINT}]
                 temperature = max(temperature, RETRY_TEMPERATURE)
 
     def ask(self, question: str) -> str:
@@ -204,15 +252,10 @@ class Agent:
         lint_rounds = 0
 
         for _ in range(self.config.max_iterations):
-            message = self._chat(tools).message
-            tool_calls = [c.model_dump() for c in message.tool_calls or []]
-            content = message.content or ""
-            if not tool_calls:
-                content, tool_calls = extract_text_tool_calls(content)
+            content, tool_calls = self._next_reply(tools)
             self._add({"role": "assistant", "content": content, "tool_calls": tool_calls})
 
             if not tool_calls:
-                # After the model gives its final answer, lint the changed files
                 problems = self._lint_changed_files()
                 if problems is not None:
                     self.tools.log.lint_problems = len(problems)
@@ -226,10 +269,12 @@ class Agent:
             for call in tool_calls:
                 name, args = call["function"]["name"], call["function"]["arguments"] or {}
                 self.on_tool_call(name, args)
-                if name in tool_names:
-                    result = self.tools.run(name, args)
-                else:
+                if name not in tool_names:
                     result = f"Error: {name} is not available in {self.mode} mode."
+                elif problems := missing_arguments([call]):
+                    result = f"Error: {problems[0]}. {CALL_FORMAT}"
+                else:
+                    result = self.tools.run(name, args)
                 self._add({"role": "tool", "tool_name": name, "content": result})
 
         return f"[Stopped after {self.config.max_iterations} iterations without a final answer]"

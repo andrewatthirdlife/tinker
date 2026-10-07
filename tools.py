@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache", "dist", "build"}
+from permissions import Mode
+
+IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build"}
 MAX_LIST_ENTRIES = 500
 MAX_SEARCH_MATCHES = 200
 EDIT_CONTEXT_LINES = 3
@@ -35,6 +37,7 @@ class ChangeLog:
     failed: int = 0
     rejected: int = 0
     lint_problems: int | None = None  # None means lint was not run
+    originals: dict[str, str | None] = field(default_factory=dict)  # content before this request; None = new file
 
     def record(self, path: str, kind: str) -> None:
         # Keep the most significant change: a new file stays "created"; an edited file can become "rewritten".
@@ -64,11 +67,12 @@ class ChangeLog:
 
 
 class Tools:
-    def __init__(self, root: Path, max_output_chars: int, confirm_write: ConfirmWrite, lint_args: list[str]):
+    def __init__(self, root: Path, max_output_chars: int, confirm_write: ConfirmWrite, lint_args: list[str], mode: Mode):
         self.root = root.resolve()
         self.max_output_chars = max_output_chars
         self.confirm_write = confirm_write
         self.lint_args = lint_args
+        self.mode = mode
         self.log = ChangeLog()
         self.registry = {
             "list_files": self.list_files,
@@ -76,7 +80,7 @@ class Tools:
             "search": self.search,
             "write_file": self.write_file,
             "edit_file": self.edit_file,
-            "git_changes": self.git_changes,
+            "review_changes": self.review_changes,
             "lint": self.lint,
         }
 
@@ -117,11 +121,22 @@ class Tools:
             raise ToolError(f"writing to '{path}' is not allowed")
         if resolved.is_dir():
             raise ToolError(f"'{path}' is a directory")
+
+        relative = str(resolved.relative_to(self.root))
+        if not self.mode.can_write(relative):
+            raise ToolError(f"{relative} is read-only in {self.mode.name} mode. {self.mode.describe_writes()}")
+
         return resolved
+
+    def _check_readable(self, target: Path) -> None:
+        relative = str(target.relative_to(self.root))
+        if not self.mode.can_read(relative):
+            raise ToolError(f"{relative} cannot be read in {self.mode.name} mode.")
 
     def _read_text(self, target: Path, path: str) -> str:
         if not target.is_file():
             raise ToolError(f"'{path}' is not a file")
+        self._check_readable(target)
         try:
             return target.read_text()
         except UnicodeDecodeError:
@@ -131,6 +146,8 @@ class Tools:
         for p in sorted(base.rglob(pattern)):
             rel = p.relative_to(self.root)
             if any(part in IGNORED_DIRS for part in rel.parts):
+                continue
+            if not self.mode.can_read(str(rel)):
                 continue
             if p.is_file():
                 yield p
@@ -145,6 +162,7 @@ class Tools:
         rejection = self.confirm_write(path, diff)
         if rejection is not None:
             raise Rejected(rejection)
+        self.log.originals.setdefault(str(target.relative_to(self.root)), old if target.exists() else None)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(new)
         if target.suffix == ".py":
@@ -179,7 +197,11 @@ class Tools:
         except re.error as e:
             raise ToolError(f"invalid regex: {e}")
         base = self._resolve(path)
-        files = [base] if base.is_file() else self._walk(base, file_pattern)
+        if base.is_file():
+            self._check_readable(base)
+            files = [base]
+        else:
+            files = self._walk(base, file_pattern)
         matches = []
         for p in files:
             try:
@@ -199,6 +221,8 @@ class Tools:
         target = self._resolve_writable(path)
         existed = target.exists()
         old = self._read_text(target, path) if existed else ""
+        if target.suffix == ".py":
+            content = _strip_trailing_whitespace(content)
         if content and not content.endswith("\n"):
             content += "\n"
         warning = self._apply(path, target, old, content)
@@ -226,6 +250,8 @@ class Tools:
             if old[end - 1 : end] == "\n" and not new_text.endswith("\n"):
                 new_text += "\n"
 
+        if target.suffix == ".py":
+            new_text = _strip_trailing_whitespace(new_text)
         new = old[:start] + new_text + old[end:]
         warning = self._apply(path, target, old, new)
         self.log.record(path, "edited")
@@ -258,27 +284,60 @@ class Tools:
         start = sum(len(line) for line in lines[:first])
         return start, start + sum(len(line) for line in lines[first : last + 1]), offset
 
-    def _git(self, *args: str) -> str:
-        result = subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True)
-        if result.returncode != 0:
-            raise ToolError(f"git {args[0]} failed: {result.stderr.strip()}")
-        return result.stdout
-
-    def git_changes(self, path: str = ".") -> str:
-        pathspec = str(self._inside(path).relative_to(self.root))
-        status = self._git("status", "--short", "--", pathspec)
-        try:
-            diff = self._git("diff", "HEAD", "--", pathspec)
-        except ToolError:  # no commits yet
-            diff = self._git("diff", "--", pathspec)
-        if not status and not diff:
-            return "No uncommitted changes."
-        return f"Status (?? = untracked, M = modified, A = added, D = deleted):\n{status}\nDiff:\n{diff or '(none)'}"
+    def review_changes(self) -> str:
+        if not self.log.originals:
+            return "You have not changed any files during this request."
+        diffs = []
+        for rel, original in self.log.originals.items():
+            if not self.mode.can_read(rel):
+                diffs.append(f"{rel}: changed (not readable in {self.mode.name} mode)")
+                continue
+            current = (self.root / rel).read_text() if (self.root / rel).exists() else ""
+            diff = "".join(difflib.unified_diff(
+                (original or "").splitlines(keepends=True), current.splitlines(keepends=True),
+                "/dev/null" if original is None else f"a/{rel}", f"b/{rel}",
+            ))
+            diffs.append(diff or f"{rel}: changed and then changed back; no difference now")
+        return "\n".join(diffs)
 
     def lint(self, path: str = ".") -> str:
         resolved_path = self._resolve(path)
         relative_path = str(resolved_path.relative_to(self.root))
 
+        if resolved_path.is_file():
+            self._check_readable(resolved_path)
+            # Lint just the single file
+            pass
+        else:
+            # Directory case: build list of readable Python files
+            python_files = []
+            for p in self._walk(resolved_path, "*.py"):
+                python_files.append(str(p.relative_to(self.root)))
+
+            if not python_files:
+                return "No problems found."
+
+            # Use the list of readable Python files instead of the directory
+            result = subprocess.run(
+                [sys.executable, "-m", "ruff", "check", "--output-format=concise", "--no-cache", *self.lint_args] + python_files,
+                cwd=self.root,
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode == 0:
+                return "No problems found."
+            elif result.returncode == 1:
+                filtered_lines = []
+                for line in result.stdout.strip().split("\n"):
+                    if "fixable with the" not in line:
+                        line = line.replace("[*] ", "")
+                        filtered_lines.append(line)
+                return "\n".join(filtered_lines)
+            else:
+                raise ToolError(result.stderr.strip())
+
+        # Single file case (original behavior)
         result = subprocess.run(
             [sys.executable, "-m", "ruff", "check", "--output-format=concise", "--no-cache", *self.lint_args, relative_path],
             cwd=self.root,
@@ -367,6 +426,11 @@ def _indent_offset(file_lines: list[str], target: list[str]) -> int | None:
         elif diff != offset:
             return None
     return offset or 0
+
+
+def _strip_trailing_whitespace(text: str) -> str:
+    # The model can't see trailing whitespace, so it can't remove it itself.
+    return "\n".join(line.rstrip() for line in text.split("\n"))
 
 
 def _reindent(text: str, offset: int) -> str:
@@ -468,14 +532,9 @@ SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "git_changes",
-            "description": "Show uncommitted changes in the git repository: file status and the diff against the last commit.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Limit to this file or directory. Defaults to '.'."},
-                },
-            },
+            "name": "review_changes",
+            "description": "Show the changes you have made to files during the current request, as a diff against how they were before it.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {

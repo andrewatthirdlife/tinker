@@ -1,5 +1,6 @@
 import argparse
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from ollama import ResponseError
@@ -7,6 +8,11 @@ from ollama import ResponseError
 from agent import Agent
 from config import Config, load_config
 from session import Session
+
+
+@dataclass
+class RunOptions:
+    auto_approve: bool = False
 
 
 def print_tool_call(name: str, args: dict) -> None:
@@ -89,11 +95,13 @@ def main() -> None:
     parser.add_argument("--config", default=Path(__file__).parent / "config.json", type=Path)
     parser.add_argument("--resume", metavar="SESSION_ID", help="Continue a previous session")
     parser.add_argument("--sessions", action="store_true", help="List previous sessions and exit")
-    parser.add_argument("--mode", choices=["plan", "edit"], help="Starting mode (default: edit for new sessions, the saved mode when resuming)")
+    parser.add_argument("--mode", choices=["plan", "edit", "docs", "feature"], help="Starting mode (default: edit for new sessions, the saved mode when resuming)")
     parser.add_argument("-p", "--prompt", metavar="MESSAGE", help="Run one request and exit ('-' reads it from stdin). Uses plan mode unless --mode edit is given, which also auto-approves changes.")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    options = RunOptions()
+
     if args.sessions:
         list_sessions(config.sessions_dir)
         return
@@ -105,14 +113,16 @@ def main() -> None:
         session = Session.create(config.sessions_dir, Path(args.workspace or "."))
 
     if args.prompt is not None:
-        if args.mode is None:
-            args.mode = "plan"
-        if args.mode == "edit":
-            config.auto_approve_writes = True
+        if args.mode is not None:
+            options.auto_approve = True
+        else:
+            args.mode = config.default_mode
 
     def confirm_write(path: str, diff: str) -> str | None:
-        if config.auto_approve_writes:
+        if options.auto_approve or config.modes[agent.mode].approve == "auto":
             return None
+        if args.prompt is not None:
+            return "This change was rejected: Tinker is running non-interactively, so it can't ask for approval. Run with --mode to approve changes automatically."
         print(f"\n{colorize_diff(diff)}\n")
         answer = input(f"Apply change to {path}? [y = yes, n = no, or type feedback to reject]: ").strip()
         if answer.lower() in ("y", "yes"):
@@ -136,7 +146,7 @@ def main() -> None:
         print(f"Resumed with {len(session.messages)} messages. Last answer:\n\n{last}\n")
     print("Type a question, or 'exit' to quit.")
     print(help_text())
-    print(f"\nAuto-approval of file changes is {'on' if config.auto_approve_writes else 'off'}.\n")
+    print(f"\nAuto-approval of file changes is {'on' if options.auto_approve else 'off'}.\n")
 
     while True:
         try:
@@ -149,7 +159,7 @@ def main() -> None:
         if not question:
             continue
         if question.startswith("/"):
-            handle_command(question[1:], agent, config)
+            handle_command(question[1:], agent, options)
             continue
         try:
             print(f"\n{agent.ask(question)}\n")
