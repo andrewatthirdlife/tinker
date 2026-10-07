@@ -6,7 +6,7 @@ from ollama import Client, ResponseError
 
 from config import Config
 from session import Session
-from tools import SCHEMAS, ConfirmWrite, Tools
+from tools import SCHEMAS, WRITE_TOOLS, ConfirmWrite, Tools
 
 SYSTEM_PROMPT = """You are a coding assistant working inside the workspace: {root}
 
@@ -16,12 +16,14 @@ IMPORTANT: Only edit or create files when the user explicitly asks you to make a
   and what each change would be. Do NOT call edit_file or write_file.
 - If the user has said not to change the code, do not call edit_file or write_file until they ask you to.
 
+{mode_prompt}
+
 You have these tools:
 - list_files: see what files exist (optionally filtered by a glob such as '*.py').
 - search: find where names, strings or patterns appear across files.
 - read_file: read a file's contents with line numbers.
-- edit_file: replace an exact piece of text in an existing file.
-- write_file: create a new file or completely replace one.
+- edit_file: replace an exact piece of text in an existing file (edit mode only).
+- write_file: create a new file or completely replace one (edit mode only).
 - git_changes: see uncommitted changes (status and diff).
 
 Guidelines:
@@ -44,6 +46,14 @@ When changing code:
 - You cannot run commands, so you cannot run tests or commit. Changes are left uncommitted for the user to review.
 
 Be concise and direct in your final answer."""
+
+MODE_PROMPTS = {
+    "edit": "Current mode: edit. You can change files with edit_file and write_file when the user asks for a change.",
+    "plan": (
+        "Current mode: plan. edit_file and write_file are unavailable, so you cannot change files. "
+        "Answer with plans only. If the user asks for a change, describe it and tell them to switch to edit mode with /edit."
+    ),
+}
 
 MAX_CHAT_RETRIES = 2
 RETRY_TEMPERATURE = 0.7
@@ -97,14 +107,32 @@ class Agent:
         self.on_notice = on_notice
         self.session = session
         # Always use the current system prompt, including when resuming an older session.
-        system = {"role": "system", "content": SYSTEM_PROMPT.format(root=session.workspace)}
-        self.messages: list[dict] = [system, *session.messages[1:]]
+        self.messages: list[dict] = [self._system_message(), *session.messages[1:]]
+
+    @property
+    def mode(self) -> str:
+        return self.session.mode
+
+    def set_mode(self, mode: str) -> None:
+        self.session.mode = mode
+        self.messages[0] = self._system_message()
+        # Also note the switch in the history, where the model is more likely to notice it.
+        self._add({"role": "user", "content": f"[The user switched to {mode} mode. {MODE_PROMPTS[mode]}]"})
+
+    def _system_message(self) -> dict:
+        prompt = SYSTEM_PROMPT.format(root=self.session.workspace, mode_prompt=MODE_PROMPTS[self.mode])
+        return {"role": "system", "content": prompt}
+
+    def _available_tools(self) -> list[dict]:
+        if self.mode == "edit":
+            return SCHEMAS
+        return [s for s in SCHEMAS if s["function"]["name"] not in WRITE_TOOLS]
 
     def _add(self, message: dict) -> None:
         self.messages.append(message)
         self.session.save(self.messages)
 
-    def _chat(self):
+    def _chat(self, tools: list[dict]):
         """Call the model, retrying when Ollama fails to parse the model's tool call (HTTP 500)."""
         messages, temperature = self.messages, self.config.temperature
         for attempt in range(MAX_CHAT_RETRIES + 1):
@@ -112,7 +140,7 @@ class Agent:
                 return self.client.chat(
                     model=self.config.model,
                     messages=messages,
-                    tools=SCHEMAS,
+                    tools=tools,
                     options={"num_ctx": self.config.num_ctx, "temperature": temperature},
                 )
             except ResponseError as e:
@@ -126,8 +154,11 @@ class Agent:
     def ask(self, question: str) -> str:
         self._add({"role": "user", "content": question})
 
+        tools = self._available_tools()
+        tool_names = {t["function"]["name"] for t in tools}
+
         for _ in range(self.config.max_iterations):
-            message = self._chat().message
+            message = self._chat(tools).message
             tool_calls = [c.model_dump() for c in message.tool_calls or []]
             content = message.content or ""
             if not tool_calls:
@@ -140,6 +171,10 @@ class Agent:
             for call in tool_calls:
                 name, args = call["function"]["name"], call["function"]["arguments"] or {}
                 self.on_tool_call(name, args)
-                self._add({"role": "tool", "tool_name": name, "content": self.tools.run(name, args)})
+                if name in tool_names:
+                    result = self.tools.run(name, args)
+                else:
+                    result = f"Error: {name} is not available in {self.mode} mode."
+                self._add({"role": "tool", "tool_name": name, "content": result})
 
         return f"[Stopped after {self.config.max_iterations} iterations without a final answer]"

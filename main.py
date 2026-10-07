@@ -3,7 +3,7 @@ from pathlib import Path
 
 from ollama import ResponseError
 
-from agent import Agent
+from agent import MODE_PROMPTS, Agent
 from config import load_config
 from session import Session
 
@@ -68,17 +68,28 @@ def main() -> None:
     if args.resume:
         last = next((m["content"] for m in reversed(session.messages) if m["role"] == "assistant" and m["content"]), "")
         print(f"Resumed with {len(session.messages)} messages. Last answer:\n\n{last}\n")
-    print("Type a question, or 'exit' to quit.\n")
+    print("Type a question, or 'exit' to quit.")
+    print("/plan: plan mode, the agent cannot change files.  /edit: edit mode, changes need your approval.\n")
 
     while True:
         try:
-            question = input("> ").strip()
+            question = input(f"[{agent.mode}] > ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
         if question in ("exit", "quit"):
             break
         if not question:
+            continue
+        if question.startswith("/"):
+            mode = question[1:]
+            if mode not in MODE_PROMPTS:
+                print(f"Unknown command {question}. Commands: {', '.join('/' + m for m in MODE_PROMPTS)}")
+            elif mode == agent.mode:
+                print(f"Already in {mode} mode.")
+            else:
+                agent.set_mode(mode)
+                print(f"Switched to {mode} mode.")
             continue
         try:
             print(f"\n{agent.ask(question)}\n")

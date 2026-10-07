@@ -32,6 +32,7 @@ class Session:
     updated: str
     dir: Path = field(repr=False)
     messages: list[dict] = field(default_factory=list, repr=False)
+    mode: str = "edit"
 
     @classmethod
     def create(cls, sessions_dir: Path, workspace: Path) -> "Session":

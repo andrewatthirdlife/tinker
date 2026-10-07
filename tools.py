@@ -9,6 +9,7 @@ IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_c
 MAX_LIST_ENTRIES = 500
 MAX_SEARCH_MATCHES = 200
 EDIT_CONTEXT_LINES = 3
+WRITE_TOOLS = {"edit_file", "write_file"}
 
 # Receives (path, diff); returns None to approve, or a rejection message for the model.
 ConfirmWrite = Callable[[str, str], str | None]
