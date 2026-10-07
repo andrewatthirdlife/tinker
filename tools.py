@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 import sandbox
+from config import CommandSettings
 from permissions import Mode, sandbox_rules
 
 IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build"}
@@ -24,6 +25,13 @@ LINT_PROBLEM_RE = re.compile(r"^\S+:\d+:\d+: (.*)$")  # "path:line:col: CODE mes
 
 # Receives (path, diff); returns None to approve, or a rejection message for the model.
 ConfirmWrite = Callable[[str, str], str | None]
+
+# Receives the command; returns None to approve, or a rejection message for the model.
+ConfirmCommand = Callable[[str], str | None]
+
+
+def refuse_commands(command: str) -> str | None:
+    return "Commands can't be approved here."
 
 
 class ToolError(Exception):
@@ -84,12 +92,14 @@ class ChangeLog:
 
 
 class Tools:
-    def __init__(self, root: Path, max_output_chars: int, confirm_write: ConfirmWrite, lint_args: list[str], mode: Mode):
+    def __init__(self, root: Path, max_output_chars: int, confirm_write: ConfirmWrite, lint_args: list[str], mode: Mode, confirm_command: ConfirmCommand = refuse_commands, command_settings: CommandSettings | None = None):
         self.root = root.resolve()
         self.max_output_chars = max_output_chars
         self.confirm_write = confirm_write
         self.lint_args = lint_args
         self.mode = mode
+        self.confirm_command = confirm_command
+        self.command_settings = command_settings or CommandSettings()
         self.log = ChangeLog()
         self.registry = {
             "list_files": self.list_files,
