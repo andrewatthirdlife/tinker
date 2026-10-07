@@ -46,6 +46,7 @@ class ChangeLog:
     originals: dict[str, str | None] = field(default_factory=dict)  # content before this request; None = new file
     too_large: set[str] = field(default_factory=set)  # changed by commands, too large to show or restore
     reverted: list[str] = field(default_factory=list)  # changes by commands that the mode doesn't allow
+    commands: list[str] = field(default_factory=list)  # commands run during this request, with their result
 
     def record(self, path: str, kind: str) -> None:
         # Keep the most significant change: a new file stays "created"; an edited file can become "rewritten".
@@ -53,7 +54,7 @@ class ChangeLog:
             self.files[path] = kind
 
     def summary(self) -> str | None:
-        if not (self.files or self.failed or self.rejected or self.reverted):
+        if not (self.files or self.failed or self.rejected or self.reverted or self.commands):
             return None
         parts = []
         if self.files:
@@ -75,7 +76,10 @@ class ChangeLog:
             if self.lint_existing:
                 problems = "problem was" if self.lint_existing == 1 else "problems were"
                 parts.append(f"{self.lint_existing} lint {problems} already there before this request")
-        parts.append("the code has not been run or tested")
+        if self.commands:
+            parts.append("ran " + ", ".join(self.commands))
+        else:
+            parts.append("the code has not been run or tested")
         return "; ".join(parts)
 
 
@@ -498,6 +502,13 @@ def _strip_trailing_whitespace(new: str, old: str) -> str:
         if tag == "equal":
             result[j1:j2] = old_lines[i1 : i1 + (j2 - j1)]
     return "\n".join(result)
+
+
+def _shorten(text: str, limit: int) -> str:
+    """Keep the start and end of long output: errors and test summaries are usually at the end."""
+    if len(text) <= limit:
+        return text
+    return text[: limit // 2] + f"\n... [{len(text) - limit} characters left out] ...\n" + text[-(limit // 2):]
 
 
 def _lint_key(problem: str) -> str:
