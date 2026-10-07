@@ -1,5 +1,6 @@
 import ast
 import difflib
+import os
 import re
 import subprocess
 import sys
@@ -8,7 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from permissions import Mode
+import sandbox
+from permissions import Mode, sandbox_rules
 
 IGNORED_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build"}
 MAX_LIST_ENTRIES = 500
@@ -16,6 +18,7 @@ MAX_SEARCH_MATCHES = 200
 EDIT_CONTEXT_LINES = 3
 NOT_FOUND_MIN_SIMILARITY = 0.4
 NOT_FOUND_MAX_LINES = 30
+SNAPSHOT_MAX_FILE_BYTES = 1_000_000  # larger files are tracked by size and time only, so they can't be restored
 WRITE_TOOLS = {"edit_file", "write_file"}
 LINT_PROBLEM_RE = re.compile(r"^\S+:\d+:\d+: (.*)$")  # "path:line:col: CODE message"
 
@@ -41,6 +44,8 @@ class ChangeLog:
     lint_problems: int | None = None  # new problems remaining; None means lint was not run
     lint_existing: int = 0  # problems in the changed files that were already there before this request
     originals: dict[str, str | None] = field(default_factory=dict)  # content before this request; None = new file
+    too_large: set[str] = field(default_factory=set)  # changed by commands, too large to show or restore
+    reverted: list[str] = field(default_factory=list)  # changes by commands that the mode doesn't allow
 
     def record(self, path: str, kind: str) -> None:
         # Keep the most significant change: a new file stays "created"; an edited file can become "rewritten".
@@ -48,7 +53,7 @@ class ChangeLog:
             self.files[path] = kind
 
     def summary(self) -> str | None:
-        if not (self.files or self.failed or self.rejected):
+        if not (self.files or self.failed or self.rejected or self.reverted):
             return None
         parts = []
         if self.files:
@@ -59,6 +64,8 @@ class ChangeLog:
             parts.append(f"{self.failed} failed edit{'s' if self.failed != 1 else ''}")
         if self.rejected:
             parts.append(f"{self.rejected} change{'s' if self.rejected != 1 else ''} rejected by the user")
+        if self.reverted:
+            parts.append("reverted changes the mode doesn't allow: " + ", ".join(self.reverted))
         if self.lint_problems is not None:
             if self.lint_problems == 0:
                 parts.append("lint: clean")
@@ -291,20 +298,78 @@ class Tools:
         return start, start + sum(len(line) for line in lines[first : last + 1]), offset
 
     def review_changes(self) -> str:
-        if not self.log.originals:
+        if not self.log.originals and not self.log.too_large:
             return "You have not changed any files during this request."
         diffs = []
         for rel, original in self.log.originals.items():
             if not self.mode.can_read(rel):
                 diffs.append(f"{rel}: changed (not readable in {self.mode.name} mode)")
                 continue
-            current = (self.root / rel).read_text() if (self.root / rel).exists() else ""
+            current = (self.root / rel).read_text(errors="replace") if (self.root / rel).exists() else ""
             diff = "".join(difflib.unified_diff(
                 (original or "").splitlines(keepends=True), current.splitlines(keepends=True),
                 "/dev/null" if original is None else f"a/{rel}", f"b/{rel}",
             ))
             diffs.append(diff or f"{rel}: changed and then changed back; no difference now")
+        diffs += [f"{rel}: changed by a command (too large to show)" for rel in sorted(self.log.too_large)]
         return "\n".join(diffs)
+
+    def run_sandboxed(self, argv: list[str], timeout: float) -> sandbox.Result:
+        """Run a command in the sandbox under the current mode, then check and record what it changed."""
+        before = self._snapshot()
+        policy = sandbox.Policy(rules=sandbox_rules(self.root, self.mode), cwd=str(self.root), env=self._command_env())
+        try:
+            return sandbox.run(argv, policy, timeout)
+        finally:
+            self._check_command_changes(before)
+
+    def _command_env(self) -> dict[str, str]:
+        env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": os.environ.get("LANG", "C.UTF-8")}
+        venv = self.root / ".venv"
+        if venv.is_dir():
+            env["PATH"] = f"{venv}/bin:{env['PATH']}"
+            env["VIRTUAL_ENV"] = str(venv)
+        return env
+
+    def _snapshot(self) -> dict[str, bytes | tuple[int, int]]:
+        """Content of the workspace's files (size and time for large ones), to see what a command changes."""
+        files: dict[str, bytes | tuple[int, int]] = {}
+        for directory, subdirs, names in os.walk(self.root):
+            subdirs[:] = [d for d in subdirs if d not in IGNORED_DIRS and not os.path.islink(os.path.join(directory, d))]
+            for name in names:
+                path = Path(directory, name)
+                if path.is_symlink() or not path.is_file():
+                    continue
+                stat = path.stat()
+                rel = str(path.relative_to(self.root))
+                files[rel] = path.read_bytes() if stat.st_size <= SNAPSHOT_MAX_FILE_BYTES else (stat.st_size, stat.st_mtime_ns)
+        return files
+
+    def _check_command_changes(self, before: dict[str, bytes | tuple[int, int]]) -> None:
+        """Record changes the mode allows; undo the rest. The sandbox should already stop them: this is a backstop."""
+        after = self._snapshot()
+        for rel in sorted(before.keys() | after.keys()):
+            old, new = before.get(rel), after.get(rel)
+            if old == new:
+                continue
+            if self.mode.can_write(rel):
+                kind = "created" if old is None else "deleted" if new is None else "changed"
+                self.log.record(rel, f"{kind} by a command")
+                if isinstance(old, tuple):
+                    self.log.too_large.add(rel)
+                else:
+                    self.log.originals.setdefault(rel, None if old is None else old.decode(errors="replace"))
+                continue
+            path = self.root / rel
+            if isinstance(old, tuple):
+                self.log.reverted.append(f"{rel} (could not restore: too large)")
+                continue
+            if old is None:
+                path.unlink()
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(old)
+            self.log.reverted.append(rel)
 
     def _ruff(self, paths: list[str], text: str | None = None) -> list[str]:
         """Run ruff on files, or on text as the content of paths[0], and return its problem lines."""
