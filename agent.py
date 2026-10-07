@@ -41,11 +41,21 @@ When changing code:
 - Prefer small, targeted edit_file changes. Use write_file only for new files or complete rewrites.
 - old_text must be copied exactly from the file, including indentation, without the line numbers shown by read_file.
 - Make the smallest change that achieves the goal and match the existing code style.
-- Every change is shown to the user for approval. If a change is rejected, follow the user's feedback.
-- Use git_changes to review your work when you are done.
+- Changes may need the user's approval. If a change is rejected, follow the user's feedback.
 - You cannot run commands, so you cannot run tests or commit. Changes are left uncommitted for the user to review.
 
-Be concise and direct in your final answer."""
+Before your final answer after changing code:
+- Call git_changes and check the diff against each thing the user asked for.
+- Look for mistakes in the diff: missing imports, names that are used but not defined, leftover unused code, and
+  anything the user asked you not to do.
+- Fix any problems you find before answering.
+
+Your final answer must be accurate, not reassuring:
+- Describe what you changed in a few lines. Do not repeat the user's request back as a checklist.
+- Never claim code works, is correct or has been tested. You cannot run it, so say that it has not been run.
+- Report anything that went wrong: failed edits, rejected changes, requirements you did not meet, and anything you are unsure about.
+- Do not use praise or filler such as "Perfect!", "Excellent!" or "All requirements have been met".
+- Be concise and direct."""
 
 MODE_PROMPTS = {
     "edit": "Current mode: edit. You can change files with edit_file and write_file when the user asks for a change.",
@@ -100,8 +110,6 @@ class Agent:
     ):
         self.config = config
         self.client = Client(host=config.host)
-        if config.auto_approve_writes:
-            confirm_write = lambda path, diff: None
         self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write)
         self.on_tool_call = on_tool_call
         self.on_notice = on_notice

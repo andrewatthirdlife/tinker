@@ -3,8 +3,8 @@ from pathlib import Path
 
 from ollama import ResponseError
 
-from agent import MODE_PROMPTS, Agent
-from config import load_config
+from agent import Agent
+from config import Config, load_config
 from session import Session
 
 
@@ -26,14 +26,31 @@ def colorize_diff(diff: str) -> str:
     return "\n".join(lines)
 
 
-def confirm_write(path: str, diff: str) -> str | None:
-    print(f"\n{colorize_diff(diff)}\n")
-    answer = input(f"Apply change to {path}? [y = yes, n = no, or type feedback to reject]: ").strip()
-    if answer.lower() in ("y", "yes"):
-        return None
-    if answer.lower() in ("", "n", "no"):
-        return "The user rejected this change."
-    return f"The user rejected this change with feedback: {answer}"
+COMMANDS = {
+    "plan": "plan mode, the agent cannot change files",
+    "edit": "edit mode, the agent can change files with your approval",
+    "auto_approve": "toggle auto-approval of file changes (this run only)",
+}
+
+
+def help_text() -> str:
+    return "\n".join(f"  /{name}: {description}" for name, description in COMMANDS.items())
+
+
+def handle_command(command: str, agent: Agent, config: Config) -> None:
+    if command not in COMMANDS:
+        print(f"Unknown command /{command}")
+        print(help_text())
+        return
+    if command == agent.mode:
+        print(f"Already in {command} mode.")
+        return
+    if command == "auto_approve":
+        config.auto_approve_writes = not config.auto_approve_writes
+        print(f"Auto-approval of file changes is now {'on' if config.auto_approve_writes else 'off'}.")
+    else:
+        agent.set_mode(command)
+        print(f"Switched to {command} mode.")
 
 
 def list_sessions(sessions_dir: Path) -> None:
@@ -62,6 +79,18 @@ def main() -> None:
         session = Session.load(config.sessions_dir, args.resume)
     else:
         session = Session.create(config.sessions_dir, Path(args.workspace or "."))
+
+    def confirm_write(path: str, diff: str) -> str | None:
+        if config.auto_approve_writes:
+            return None
+        print(f"\n{colorize_diff(diff)}\n")
+        answer = input(f"Apply change to {path}? [y = yes, n = no, or type feedback to reject]: ").strip()
+        if answer.lower() in ("y", "yes"):
+            return None
+        if answer.lower() in ("", "n", "no"):
+            return "The user rejected this change."
+        return f"The user rejected this change with feedback: {answer}"
+
     agent = Agent(config, session, on_tool_call=print_tool_call, on_notice=print_notice, confirm_write=confirm_write)
 
     print(f"Session: {session.id}  Model: {config.model}  Workspace: {session.workspace}")
@@ -69,7 +98,8 @@ def main() -> None:
         last = next((m["content"] for m in reversed(session.messages) if m["role"] == "assistant" and m["content"]), "")
         print(f"Resumed with {len(session.messages)} messages. Last answer:\n\n{last}\n")
     print("Type a question, or 'exit' to quit.")
-    print("/plan: plan mode, the agent cannot change files.  /edit: edit mode, changes need your approval.\n")
+    print(help_text())
+    print(f"\nAuto-approval of file changes is {'on' if config.auto_approve_writes else 'off'}.\n")
 
     while True:
         try:
@@ -82,14 +112,7 @@ def main() -> None:
         if not question:
             continue
         if question.startswith("/"):
-            mode = question[1:]
-            if mode not in MODE_PROMPTS:
-                print(f"Unknown command {question}. Commands: {', '.join('/' + m for m in MODE_PROMPTS)}")
-            elif mode == agent.mode:
-                print(f"Already in {mode} mode.")
-            else:
-                agent.set_mode(mode)
-                print(f"Switched to {mode} mode.")
+            handle_command(question[1:], agent, config)
             continue
         try:
             print(f"\n{agent.ask(question)}\n")
