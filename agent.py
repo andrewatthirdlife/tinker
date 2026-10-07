@@ -18,14 +18,6 @@ IMPORTANT: Only edit or create files when the user explicitly asks you to make a
 
 {mode_prompt}
 
-You have these tools:
-- list_files: see what files exist (optionally filtered by a glob such as '*.py').
-- search: find where names, strings or patterns appear across files.
-- read_file: read a file's contents with line numbers.
-- edit_file: replace an exact piece of text in an existing file (edit mode only).
-- write_file: create a new file or completely replace one (edit mode only).
-- git_changes: see uncommitted changes (status and diff).
-
 Guidelines:
 - Explore before answering: use list_files and search to find relevant code, then read_file to examine it.
 - Do not guess about code you have not read. If something cannot be found, say so.
@@ -85,6 +77,14 @@ PROGRESS_REMINDER = (
     "that were rewritten in full, and say that the code has not been run.]"
 )
 
+MAX_LINT_ROUNDS = 2
+LINT_PROBLEM_RE = re.compile(r"^\S+:\d+:\d+: ")
+LINT_REMINDER = (
+    "[Note from the agent, not the user. Lint found problems in files you changed:\n{problems}\n"
+    "Fix the problems your changes caused. If a problem was already there before your changes, "
+    "mention it in your final answer and leave it.]"
+)
+
 FUNCTION_RE = re.compile(r"<function=([\w-]+)>(.*?)</function>", re.DOTALL)
 PARAMETER_RE = re.compile(r"<parameter=([\w-]+)>\n?(.*?)\n?</parameter>", re.DOTALL)
 PARAM_TYPES = {
@@ -123,7 +123,7 @@ class Agent:
     ):
         self.config = config
         self.client = Client(host=config.host)
-        self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write)
+        self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write, config.lint_args)
         self.on_tool_call = on_tool_call
         self.on_notice = on_notice
         self.session = session
@@ -157,6 +157,20 @@ class Agent:
         """Facts about file changes during the last request, independent of what the model claims."""
         return self.tools.log.summary()
 
+    def _lint_changed_files(self) -> list[str] | None:
+        """Lint changed Python files and return problem lines."""
+        py_files = [path for path in self.tools.log.files if path.endswith(".py")]
+        if not py_files:
+            return None
+
+        problems = []
+        for path in py_files:
+            output = self.tools.run("lint", {"path": path})
+            for line in output.split("\n"):
+                if LINT_PROBLEM_RE.match(line):
+                    problems.append(line)
+        return problems
+
     def _chat(self, tools: list[dict]):
         """Call the model, retrying when Ollama fails to parse the model's tool call (HTTP 500)."""
         # Reminders are added for this call only and are not kept in the history.
@@ -187,6 +201,7 @@ class Agent:
 
         tools = self._available_tools()
         tool_names = {t["function"]["name"] for t in tools}
+        lint_rounds = 0
 
         for _ in range(self.config.max_iterations):
             message = self._chat(tools).message
@@ -197,6 +212,15 @@ class Agent:
             self._add({"role": "assistant", "content": content, "tool_calls": tool_calls})
 
             if not tool_calls:
+                # After the model gives its final answer, lint the changed files
+                problems = self._lint_changed_files()
+                if problems is not None:
+                    self.tools.log.lint_problems = len(problems)
+                    if problems and lint_rounds < MAX_LINT_ROUNDS:
+                        lint_rounds += 1
+                        self.on_notice(f"Lint found {len(problems)} problem(s); asking the model to fix them")
+                        self._add({"role": "user", "content": LINT_REMINDER.format(problems="\n".join(problems))})
+                        continue
                 return content
 
             for call in tool_calls:

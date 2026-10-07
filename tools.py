@@ -2,6 +2,7 @@ import ast
 import difflib
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -33,6 +34,7 @@ class ChangeLog:
     files: dict[str, str] = field(default_factory=dict)  # path -> "created", "edited" or "rewritten"
     failed: int = 0
     rejected: int = 0
+    lint_problems: int | None = None  # None means lint was not run
 
     def record(self, path: str, kind: str) -> None:
         # Keep the most significant change: a new file stays "created"; an edited file can become "rewritten".
@@ -51,15 +53,22 @@ class ChangeLog:
             parts.append(f"{self.failed} failed edit{'s' if self.failed != 1 else ''}")
         if self.rejected:
             parts.append(f"{self.rejected} change{'s' if self.rejected != 1 else ''} rejected by the user")
+        if self.lint_problems is not None:
+            if self.lint_problems == 0:
+                parts.append("lint: clean")
+            else:
+                problems = "problem" if self.lint_problems == 1 else "problems"
+                parts.append(f"lint: {self.lint_problems} {problems} remains")
         parts.append("the code has not been run or tested")
         return "; ".join(parts)
 
 
 class Tools:
-    def __init__(self, root: Path, max_output_chars: int, confirm_write: ConfirmWrite):
+    def __init__(self, root: Path, max_output_chars: int, confirm_write: ConfirmWrite, lint_args: list[str]):
         self.root = root.resolve()
         self.max_output_chars = max_output_chars
         self.confirm_write = confirm_write
+        self.lint_args = lint_args
         self.log = ChangeLog()
         self.registry = {
             "list_files": self.list_files,
@@ -68,6 +77,7 @@ class Tools:
             "write_file": self.write_file,
             "edit_file": self.edit_file,
             "git_changes": self.git_changes,
+            "lint": self.lint,
         }
 
     def run(self, name: str, args: dict) -> str:
@@ -265,6 +275,29 @@ class Tools:
             return "No uncommitted changes."
         return f"Status (?? = untracked, M = modified, A = added, D = deleted):\n{status}\nDiff:\n{diff or '(none)'}"
 
+    def lint(self, path: str = ".") -> str:
+        resolved_path = self._resolve(path)
+        relative_path = str(resolved_path.relative_to(self.root))
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--output-format=concise", "--no-cache", *self.lint_args, relative_path],
+            cwd=self.root,
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode == 0:
+            return "No problems found."
+        elif result.returncode == 1:
+            filtered_lines = []
+            for line in result.stdout.strip().split("\n"):
+                if "fixable with the" not in line:
+                    line = line.replace("[*] ", "")
+                    filtered_lines.append(line)
+            return "\n".join(filtered_lines)
+        else:
+            raise ToolError(result.stderr.strip())
+
 
 def _window_matches(lines: list[str], indexes: list[int], target: list[str]) -> list[tuple[int, int, int]]:
     """Match target against consecutive runs of the given line indexes. Returns (first, last, offset) per match."""
@@ -441,6 +474,19 @@ SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Limit to this file or directory. Defaults to '.'."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lint",
+            "description": "Check Python code for errors such as undefined names, unused imports and syntax errors. Run it on the files you changed before you finish.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File or directory to check, relative to the workspace root. Defaults to '.'."},
                 },
             },
         },

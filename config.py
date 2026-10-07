@@ -13,6 +13,7 @@ class Config:
     max_tool_output_chars: int
     auto_approve_writes: bool
     sessions_dir: Path
+    lint_args: list[str]
 
     def __post_init__(self):
         self.sessions_dir = Path(self.sessions_dir).expanduser()
