@@ -10,7 +10,8 @@
   "default_mode": "plan",
   "commands": {
     "timeout_seconds": 120,
-    "max_output_chars": 20000
+    "max_output_chars": 20000,
+    "allow_project_auto_approve": false
   },
   "modes": {
     "plan": {

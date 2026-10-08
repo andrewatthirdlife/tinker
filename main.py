@@ -6,7 +6,7 @@ from pathlib import Path
 from ollama import ResponseError
 
 from agent import Agent
-from config import Config, load_config
+from config import Config, apply_project_config, load_config
 from session import Session
 
 
@@ -121,20 +121,27 @@ def main() -> None:
     config = load_config(args.config)
     options = RunOptions()
 
-    if args.mode is not None and args.mode not in config.modes:
-        parser.error(f"unknown mode {args.mode!r}; the modes are: {', '.join(config.modes)}")
-
     if args.sessions:
         list_sessions(config.sessions_dir)
         return
+
     if args.resume:
         if args.workspace:
             parser.error("--resume uses the session's workspace; don't pass one")
         session = Session.load(config.sessions_dir, args.resume)
+        workspace = Path(session.workspace)
     else:
-        session = Session.create(config.sessions_dir, Path(args.workspace or "."))
+        session = None
+        workspace = Path(args.workspace or ".")
 
-    if args.prompt is not None:
+    for warning in apply_project_config(config, workspace.resolve()):
+        print(f"Warning: {warning}", file=sys.stderr)
+
+    if args.mode is not None and args.mode not in config.modes:
+        parser.error(f"unknown mode {args.mode!r}; the modes are: {', '.join(config.modes)}")
+
+    if session is None:
+        session = Session.create(config.sessions_dir, workspace)
         if args.mode is not None:
             options.auto_approve = True
         else:
