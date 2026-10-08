@@ -96,11 +96,19 @@ EMPTY_ANSWER_REMINDER = (
     "[Note from the agent, not the user. Your last reply was empty. Give your final answer now: what you found or "
     "changed, which commands you ran and what they showed, and anything that is still unfinished.]"
 )
-MAX_CUT_OFF_ROUNDS = 3
+MAX_CUT_OFF_ROUNDS = 3  # in a row; a reply with a tool call starts the count again
 CUT_OFF_REMINDER = (
     "[Note from the agent, not the user. Your last reply was cut off at the length limit before it finished, so "
-    "nothing was done. Think less and take a smaller step: make one tool call now, and prefer edit_file on a few "
-    "lines over rewriting a whole file.]"
+    "nothing was done. Thinking is turned off for your next reply: act now with one tool call. If you are unsure "
+    "what is wrong, find out by running something or reading the code; otherwise make a small edit_file change.]"
+)
+NO_ANSWER = "[The model stopped without giving an answer]"
+MAX_REPEATS = 3  # after the same call gives the same result this many times in a row, it is not run again
+STOP_AFTER_REPEATS = 6  # ... and a call repeated this many times ends the request
+NOT_RUN_AGAIN = (
+    "Error: not run. You have made this exact call {count} times in a row and got the same result each time, so "
+    "it would only give that result again. Do something different: act on what the result showed, look at "
+    "other code or files, or use another tool."
 )
 FAILED_COMMAND_REMINDER = (
     "[Note from the agent, not the user. The last command you ran failed: {command}. "
@@ -170,6 +178,15 @@ def _for_model(messages: list[dict]) -> list[dict]:
             m = {k: v for k, v in m.items() if k not in drop}
         result.append(m)
     return result
+
+
+def _command_passed(result: str) -> bool:
+    return bool(re.search(r"^exit code 0,", result, re.M))
+
+
+def _short_args(args: dict) -> str:
+    text = ", ".join(f"{k}={v!r}" for k, v in args.items())
+    return text if len(text) <= 80 else text[:77] + "..."
 
 
 def _call_key(call: dict) -> tuple[str, str]:
@@ -277,7 +294,7 @@ class Agent:
                 continue
             self.on_tool_call("run_command", {"command": command})
             result = self.tools.run("run_command", {"command": command})
-            if not re.search(r"^exit code 0,", result, re.M):
+            if not _command_passed(result):
                 failing.append(command)
                 failures.append(result[:CHECK_OUTPUT_CHARS])
         self.tools.log.checks_failing = failing
@@ -299,7 +316,7 @@ class Agent:
         problems, self.tools.log.lint_existing = result
         return problems
 
-    def _next_reply(self, tools: list[dict]) -> tuple[str, list[dict], dict]:
+    def _next_reply(self, tools: list[dict], think: bool | None = None) -> tuple[str, list[dict], dict]:
         """Get the model's next reply, asking again if a tool call is missing required parameters.
 
         A reply like that is never added to the history: the model copies bad calls it can see.
@@ -307,7 +324,7 @@ class Agent:
         """
         hint, temperature = [], self.config.temperature
         for attempt in range(MAX_CHAT_RETRIES + 1):
-            response = self._chat(tools, hint, temperature)
+            response = self._chat(tools, hint, temperature, think)
             message = response.message
             extra = {k: v for k, v in (("thinking", getattr(message, "thinking", None)),
                                        ("done_reason", getattr(response, "done_reason", None)),
@@ -336,7 +353,7 @@ class Agent:
                 self._last_trim_notice = notice
         return trimmed.messages
 
-    def _chat(self, tools: list[dict], hint: list[dict], temperature: float):
+    def _chat(self, tools: list[dict], hint: list[dict], temperature: float, think: bool | None = None):
         """Call the model, retrying when Ollama fails to parse the model's tool call (HTTP 500)."""
         # Reminders are added for this call only and are not kept in the history.
         reminders = []
@@ -355,6 +372,8 @@ class Agent:
                     options={"num_ctx": self.config.num_ctx, "temperature": temperature,
                              "num_predict": self._reply_tokens()},
                     stream=True,
+                    # Only ever set to False, after a reply cut off while thinking; None leaves the model's default.
+                    think=think,
                 ))
             except ResponseError as e:
                 if e.status_code != 500 or attempt == MAX_CHAT_RETRIES:
@@ -375,10 +394,13 @@ class Agent:
         check_rounds = 0
         empty_answer_rounds = 0
         cut_off_rounds = 0
+        think = None
+        streak = 0  # how many times in a row the previous call was made with the same result
 
         previous_call, previous_content = (None, None, None), None
         for _ in range(self.config.max_iterations):
-            content, tool_calls, extra = self._next_reply(tools)
+            content, tool_calls, extra = self._next_reply(tools, think)
+            think = None
             if (content and content == previous_content and len(tool_calls) == 1
                     and tool_calls[0]["function"]["name"] not in WRITE_TOOLS
                     and _call_key(tool_calls[0]) == previous_call[:2]):
@@ -391,9 +413,12 @@ class Agent:
 
             if not tool_calls:
                 if extra.get("done_reason") == "length" and cut_off_rounds < MAX_CUT_OFF_ROUNDS:
-                    # The reply hit num_predict, usually while thinking, so it isn't an answer.
+                    # The reply hit num_predict, usually while thinking in circles, so it isn't an answer. Telling
+                    # the model to think less doesn't work; turning thinking off for one reply makes it act.
                     cut_off_rounds += 1
-                    self.on_notice("The model's reply was cut off at the length limit; asking it to take a smaller step")
+                    if extra.get("thinking"):
+                        think = False
+                    self.on_notice("The model's reply was cut off at the length limit; asking it to act without thinking")
                     self._add({"role": "user", "content": CUT_OFF_REMINDER})
                     continue
                 if not content.strip() and empty_answer_rounds < MAX_EMPTY_ANSWER_ROUNDS:
@@ -422,11 +447,22 @@ class Agent:
                     self.on_notice(f"The last command failed ({self.tools.log.last_failed_command}); asking the model to deal with it")
                     self._add({"role": "user", "content": FAILED_COMMAND_REMINDER.format(command=self.tools.log.last_failed_command)})
                     continue
-                return content
+                return content if content.strip() else NO_ANSWER
 
+            cut_off_rounds = 0
             for call in tool_calls:
                 name, args = call["function"]["name"], call["function"]["arguments"] or {}
                 self.on_tool_call(name, args)
+                # The same call with the same result again and again: the model is stuck. Stop running the call,
+                # and in the end stop the request.
+                same_call = _call_key(call) == previous_call[:2]
+                if same_call and streak >= STOP_AFTER_REPEATS:
+                    self.on_notice(f"The model made the same {name} call {streak + 1} times in a row; stopping")
+                    return f"[Stopped: the model kept repeating the same call, {name}({_short_args(args)})]"
+                if same_call and streak >= MAX_REPEATS:
+                    streak += 1
+                    self._add({"role": "tool", "tool_name": name, "content": NOT_RUN_AGAIN.format(count=streak - 1)})
+                    continue
                 if name not in tool_names:
                     result = f"Error: {name} is not available in {self.mode} mode."
                 elif problems := missing_arguments([call]):
@@ -434,6 +470,7 @@ class Agent:
                 else:
                     result = self.tools.run(name, args)
                 this_call = (*_call_key(call), result)
+                streak = streak + 1 if this_call == previous_call else 1
                 if this_call == previous_call:
                     result += REPEAT_NOTE
                 previous_call, previous_content = this_call, content

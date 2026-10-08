@@ -6,7 +6,7 @@ from pathlib import Path
 from ollama import ChatResponse, Message
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from agent import EMPTY_ANSWER_REMINDER, Agent, collect_reply  # noqa: E402
+from agent import EMPTY_ANSWER_REMINDER, NO_ANSWER, Agent, collect_reply  # noqa: E402
 from config import Config  # noqa: E402
 from session import Session  # noqa: E402
 
@@ -55,7 +55,7 @@ def test_empty_answer_gets_one_request_for_a_real_one(tmp_path):
     assert sum(m["content"] == EMPTY_ANSWER_REMINDER for m in agent.messages) == 1
 
 
-def test_a_second_empty_answer_is_accepted(tmp_path):
+def test_a_second_empty_answer_is_reported(tmp_path):
     _, answer, notices = run(tmp_path, ["", ""])
-    assert answer == ""
+    assert answer == NO_ANSWER
     assert len(notices) == 1

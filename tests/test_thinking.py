@@ -19,9 +19,9 @@ def reply(content="", thinking=None, done_reason="stop", call=None):
                         message=Message(role="assistant", content=content, thinking=thinking, tool_calls=calls))
 
 
-def make_agent(tmp_path, replies):
+def make_agent(tmp_path, replies, max_iterations=10):
     config = Config(
-        host="h", model="m", num_ctx=65536, temperature=0, max_iterations=10, max_tool_output_chars=20000,
+        host="h", model="m", num_ctx=65536, temperature=0, max_iterations=max_iterations, max_tool_output_chars=20000,
         sessions_dir=str(tmp_path / "sessions"), lint_args=[], default_mode="plan",
         modes={"plan": {"description": "d", "write": []}},
     )
@@ -31,7 +31,7 @@ def make_agent(tmp_path, replies):
     notices, sent = [], []
 
     def chat(self, **kw):
-        sent.append(kw["messages"])
+        sent.append(kw)
         return replies.pop(0)
     agent = Agent(config, Session.create(config.sessions_dir, workspace), lambda n, a: None, notices.append,
                   lambda p, d: None, lambda c: None)
@@ -46,7 +46,7 @@ def test_thinking_is_saved_and_sent_back_within_the_request(tmp_path):
         reply("Still x = 1."),
     ])
     agent.ask("what does a.py do?")
-    second_call = [m for m in sent[1] if m["role"] == "assistant"]
+    second_call = [m for m in sent[1]["messages"] if m["role"] == "assistant"]
     assert second_call[-1]["thinking"] == "Plan: read a.py, then explain."
     assert "done_reason" not in second_call[-1] and "eval_count" not in second_call[-1]
 
@@ -56,7 +56,7 @@ def test_thinking_is_saved_and_sent_back_within_the_request(tmp_path):
     assert first["eval_count"] == 42
 
     agent.ask("and now?")
-    assert not any(m.get("thinking") for m in sent[2])
+    assert not any(m.get("thinking") for m in sent[2]["messages"])
 
 
 def test_cut_off_reply_is_sent_back(tmp_path):
@@ -65,16 +65,32 @@ def test_cut_off_reply_is_sent_back(tmp_path):
         reply("a.py sets x to 1."),
     ])
     assert agent.ask("what does a.py do?") == "a.py sets x to 1."
-    assert notices == ["The model's reply was cut off at the length limit; asking it to take a smaller step"]
-    assert any(m.get("content") == CUT_OFF_REMINDER for m in sent[1])
-    assert not any(m.get("thinking") for m in sent[1])   # the cut-off thinking doesn't go back
+    assert notices == ["The model's reply was cut off at the length limit; asking it to act without thinking"]
+    assert any(m.get("content") == CUT_OFF_REMINDER for m in sent[1]["messages"])
+    assert not any(m.get("thinking") for m in sent[1]["messages"])   # the cut-off thinking doesn't go back
+    assert [kw["think"] for kw in sent] == [None, False]   # thinking is off for the one reply after the cut-off
 
 
-def test_cut_off_replies_are_accepted_after_the_limit(tmp_path):
+def test_thinking_stays_on_for_a_model_that_was_not_thinking(tmp_path):
+    agent, _, sent = make_agent(tmp_path, [reply("Let me", done_reason="length"), reply("Done.")])
+    agent.ask("what does a.py do?")
+    assert [kw["think"] for kw in sent] == [None, None]
+
+
+def test_cut_off_replies_are_accepted_after_the_limit_in_a_row(tmp_path):
     replies = [reply("Let me", done_reason="length") for _ in range(MAX_CUT_OFF_ROUNDS + 1)]
     agent, notices, _ = make_agent(tmp_path, replies)
     assert agent.ask("what does a.py do?") == "Let me"
     assert len(notices) == MAX_CUT_OFF_ROUNDS
+
+
+def test_a_tool_call_starts_the_cut_off_count_again(tmp_path):
+    cut = reply("Let me", done_reason="length")
+    read = reply(call=("read_file", {"path": "a.py"}))
+    replies = [cut] * MAX_CUT_OFF_ROUNDS + [read] + [cut] * MAX_CUT_OFF_ROUNDS + [reply("x is 1.")]
+    agent, notices, _ = make_agent(tmp_path, replies, max_iterations=20)
+    assert agent.ask("what does a.py do?") == "x is 1."
+    assert len(notices) == 2 * MAX_CUT_OFF_ROUNDS
 
 
 def test_for_model_drops_earlier_thinking_and_stats():
