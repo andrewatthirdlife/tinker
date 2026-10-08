@@ -379,7 +379,14 @@ class Tools:
             self._check_command_changes(before)
 
     def _command_env(self) -> dict[str, str]:
-        env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": os.environ.get("LANG", "C.UTF-8")}
+        env = {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            # Commands often can't create files in the workspace root (it holds the read-only .git), so ask tools
+            # not to write caches there: ruff fails outright without this, pytest warns.
+            "RUFF_NO_CACHE": "true",
+            "PYTEST_ADDOPTS": "-p no:cacheprovider",
+        }
         venv = self.root / ".venv"
         if venv.is_dir():
             env["PATH"] = f"{venv}/bin:{env['PATH']}"

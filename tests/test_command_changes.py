@@ -123,5 +123,7 @@ def test_tool_edit_and_command_change_reviewed_together(workspace):
 def test_command_environment_uses_workspace_venv(workspace):
     (workspace / ".venv/bin").mkdir(parents=True)
     tools = make_tools(workspace, "plan")
-    result = run(tools, "import os; print(os.environ['VIRTUAL_ENV']); print(os.environ['PATH'].split(':')[0])")
-    assert result.stdout.split() == [str(workspace / ".venv"), str(workspace / ".venv/bin")], result.stderr
+    result = run(tools, "import os; print(os.environ['VIRTUAL_ENV']); print(os.environ['PATH'].split(':')[0]); "
+                        "print(os.environ['RUFF_NO_CACHE'], os.environ['PYTEST_ADDOPTS'])")
+    assert result.stdout.split("\n")[:3] == [str(workspace / ".venv"), str(workspace / ".venv/bin"),
+                                             "true -p no:cacheprovider"], result.stderr
