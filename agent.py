@@ -7,7 +7,7 @@ from ollama import Client, ResponseError
 
 from config import Config
 from session import Session
-from tools import SCHEMAS, WRITE_TOOLS, ChangeLog, ConfirmWrite, ToolError, Tools
+from tools import SCHEMAS, WRITE_TOOLS, ChangeLog, ConfirmCommand, ConfirmWrite, ToolError, Tools
 
 SYSTEM_PROMPT = """You are Tinker, a coding assistant working inside the workspace: {root}
 
@@ -142,12 +142,13 @@ class Agent:
         on_tool_call: Callable[[str, dict], None],
         on_notice: Callable[[str], None],
         confirm_write: ConfirmWrite,
+        confirm_command: ConfirmCommand,
     ):
         self.config = config
         self.client = Client(host=config.host)
         if session.mode not in config.modes:
             session.mode = config.default_mode
-        self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write, config.lint_args, config.modes[session.mode])
+        self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write, config.lint_args, config.modes[session.mode], confirm_command=confirm_command, command_settings=config.commands)
         self.on_tool_call = on_tool_call
         self.on_notice = on_notice
         self.session = session

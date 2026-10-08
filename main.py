@@ -60,7 +60,7 @@ def help_text(config: Config) -> str:
     ]
     for name, mode in config.modes.items():
         lines.append(f"  /{name}: switch to {name} mode ({mode.description})")
-    lines.append("  /auto_approve: toggle auto-approval of file changes (this run only)")
+    lines.append("  /auto_approve: toggle auto-approval of file changes and commands (this run only)")
     return "\n".join(lines)
 
 
@@ -94,7 +94,7 @@ def handle_command(command: str, agent: Agent, config: Config, options: RunOptio
         _switch_mode(agent, config, words[0])
     elif words[0] == "auto_approve":
         options.auto_approve = not options.auto_approve
-        print(f"Auto-approval of file changes is now {'on' if options.auto_approve else 'off'}.")
+        print(f"Auto-approval of file changes and commands is now {'on' if options.auto_approve else 'off'}.")
     else:
         print(f"Unknown command /{command}")
         print(help_text(config))
@@ -153,7 +153,20 @@ def main() -> None:
             return "The user rejected this change."
         return f"The user rejected this change with feedback: {answer}"
 
-    agent = Agent(config, session, on_tool_call=print_tool_call, on_notice=print_notice, confirm_write=confirm_write)
+    def confirm_command(command: str) -> str | None:
+        if options.auto_approve or config.modes[agent.mode].approve_commands == "auto":
+            return None
+        if args.prompt is not None:
+            return "This command was rejected: Tinker is running non-interactively, so it can't ask for approval. Run with --mode to approve commands automatically."
+        print(f"\nRun command: {command}\n")
+        answer = input("Run this command? [y = yes, n = no, or type feedback to reject]: ").strip()
+        if answer.lower() in ("y", "yes"):
+            return None
+        if answer.lower() in ("", "n", "no"):
+            return "The user rejected this command."
+        return f"The user rejected this command with feedback: {answer}"
+
+    agent = Agent(config, session, on_tool_call=print_tool_call, on_notice=print_notice, confirm_write=confirm_write, confirm_command=confirm_command)
 
     if args.mode is not None and args.mode != agent.mode:
         agent.set_mode(args.mode)
@@ -168,7 +181,7 @@ def main() -> None:
         print(f"Resumed with {len(session.messages)} messages. Last answer:\n\n{last}\n")
     print("Type a question, or 'exit' to quit.")
     print(help_text(config))
-    print(f"\nAuto-approval of file changes is {'on' if options.auto_approve else 'off'}.\n")
+    print(f"\nAuto-approval of file changes and commands is {'on' if options.auto_approve else 'off'}.\n")
 
     while True:
         try:
