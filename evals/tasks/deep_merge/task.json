@@ -1,0 +1,1 @@
+{"prompt": "merge_settings in settings.py only merges the top level, so nested settings are lost. Make it merge nested dictionaries, so that the tests pass.", "mode": "feature", "description": "Recursive dictionary merge"}

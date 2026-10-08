@@ -1,0 +1,1 @@
+{"prompt": "Implement slugify in text.py so that the tests pass.", "mode": "feature", "description": "String handling with edge cases"}

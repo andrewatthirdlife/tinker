@@ -1,0 +1,1 @@
+{"prompt": "The tests for last_n are failing. Fix the bug.", "mode": "feature", "description": "Fix an off-by-one slice"}

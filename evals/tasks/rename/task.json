@@ -1,0 +1,1 @@
+{"prompt": "The tests expect the function parsedate in dates.py to be called parse_date. Rename it, and update everything that uses it.", "mode": "feature", "description": "Rename a function used in two modules"}

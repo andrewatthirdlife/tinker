@@ -1,0 +1,1 @@
+{"prompt": "Add an optional separator parameter to join_words in words.py (default a single space), so the new test passes without breaking the existing ones or the code that already calls join_words.", "mode": "feature", "description": "Extend a function without breaking its callers"}
