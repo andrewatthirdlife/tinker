@@ -669,4 +669,18 @@ SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Run a command in a sandbox, for example to run the tests. It can read the workspace, can only change files the current mode allows, and has no network access. The command is not run through a shell, so pipes, redirection and && don't work. Only commands the current mode allows can be run.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command line, e.g. 'pytest -q tests/test_calc.py'."},
+                },
+                "required": ["command"],
+            },
+        },
+    },
 ]
