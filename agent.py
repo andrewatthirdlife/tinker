@@ -165,15 +165,16 @@ def _for_model(messages: list[dict]) -> list[dict]:
     """The history as the model should see it.
 
     Thinking goes back for the current request only, so the model keeps its plan between tool calls; earlier
-    requests' thinking is dropped, as is the thinking of a reply cut off at the length limit. The reply
-    statistics are kept for the session only.
+    requests' thinking is dropped, as is the thinking of a reply cut off at the length limit or of a reply that
+    repeated a call (shown its own thinking, a stuck model copies it word for word). The reply statistics are
+    kept for the session only.
     """
     current = max((i for i, m in enumerate(messages) if context.is_request(m)), default=0)
     result = []
     for i, m in enumerate(messages):
         if m["role"] == "assistant":
-            drop = {"done_reason", "eval_count"}
-            if i < current or m.get("done_reason") == "length":
+            drop = {"done_reason", "eval_count", "repeated"}
+            if i < current or m.get("done_reason") == "length" or m.get("repeated"):
                 drop.add("thinking")
             m = {k: v for k, v in m.items() if k not in drop}
         result.append(m)
@@ -316,13 +317,15 @@ class Agent:
         problems, self.tools.log.lint_existing = result
         return problems
 
-    def _next_reply(self, tools: list[dict], think: bool | None = None) -> tuple[str, list[dict], dict]:
+    def _next_reply(self, tools: list[dict], think: bool | None = None,
+                    temperature: float | None = None) -> tuple[str, list[dict], dict]:
         """Get the model's next reply, asking again if a tool call is missing required parameters.
 
         A reply like that is never added to the history: the model copies bad calls it can see.
         Also returns the reply's thinking, why it stopped and its length, to keep with it in the history.
         """
-        hint, temperature = [], self.config.temperature
+        hint = []
+        temperature = self.config.temperature if temperature is None else temperature
         for attempt in range(MAX_CHAT_RETRIES + 1):
             response = self._chat(tools, hint, temperature, think)
             message = response.message
@@ -394,13 +397,14 @@ class Agent:
         check_rounds = 0
         empty_answer_rounds = 0
         cut_off_rounds = 0
-        think = None
+        think = temperature = None
+        previous_reply = None  # the index of the reply that made the previous call
         streak = 0  # how many times in a row the previous call was made with the same result
 
         previous_call, previous_content = (None, None, None), None
         for _ in range(self.config.max_iterations):
-            content, tool_calls, extra = self._next_reply(tools, think)
-            think = None
+            content, tool_calls, extra = self._next_reply(tools, think, temperature)
+            think = temperature = None
             if (content and content == previous_content and len(tool_calls) == 1
                     and tool_calls[0]["function"]["name"] not in WRITE_TOOLS
                     and _call_key(tool_calls[0]) == previous_call[:2]):
@@ -410,6 +414,7 @@ class Agent:
                 self.on_notice(f"Repeated {tool_calls[0]['function']['name']} call; taking the reply as the final answer")
                 tool_calls = []
             self._add({"role": "assistant", "content": content, "tool_calls": tool_calls, **extra})
+            reply = len(self.messages) - 1
 
             if not tool_calls:
                 if extra.get("done_reason") == "length" and cut_off_rounds < MAX_CUT_OFF_ROUNDS:
@@ -473,6 +478,13 @@ class Agent:
                 streak = streak + 1 if this_call == previous_call else 1
                 if this_call == previous_call:
                     result += REPEAT_NOTE
+                    # Don't show the model the thinking that led it here twice, and make its next reply less
+                    # predictable: at a low temperature a stuck model gives the same reply again.
+                    for i in (previous_reply, reply):
+                        if i is not None and self.messages[i]["role"] == "assistant":
+                            self.messages[i]["repeated"] = True
+                    temperature = max(self.config.temperature, RETRY_TEMPERATURE)
+                previous_reply = reply
                 previous_call, previous_content = this_call, content
                 self._add({"role": "tool", "tool_name": name, "content": result})
 

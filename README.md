@@ -168,7 +168,7 @@ Before accepting a final answer, Tinker sends the work back to the model when:
 - the answer is empty, or the reply was cut off at the length limit. A thinking model that was cut off while
   thinking gets its next reply with thinking turned off, so that it acts instead of going round in circles.
 
-If the model makes the same call 3 times in a row and gets the same result each time, the call isn't run again and the model is told to do something different; after 6 times the request stops. If the model ends with no answer at all, Tinker says so instead of printing nothing.
+When the model repeats a call and gets the same result, its next reply is made at a higher temperature, and the thinking behind the repeated calls isn't sent back (a stuck model copies its own thinking word for word). If it makes the same call 3 times in a row with the same result, the call isn't run again and the model is told to do something different; after 6 times the request stops. If the model ends with no answer at all, Tinker says so instead of printing nothing.
 
 With thinking models, the model's thinking is kept and sent back within a request, so it keeps its plan between tool calls; it is dropped for earlier requests. Each reply's thinking, why it stopped and its length are saved in the session.
 
