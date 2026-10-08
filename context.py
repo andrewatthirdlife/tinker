@@ -4,9 +4,11 @@ If a prompt is longer than num_ctx, Ollama silently cuts it, and in practice the
 conversation, including the request it is working on. So the agent trims a copy of the history before each call
 (the saved session keeps everything):
 
-1. old tool outputs, and large arguments of old tool calls (file contents), are replaced by a short note;
-2. if that isn't enough, whole earlier requests are dropped, oldest first; the current request is always kept;
-3. as a last resort, the largest remaining texts are shortened, keeping their start and end.
+1. the model's thinking in earlier replies is dropped, oldest first, keeping the latest;
+2. old tool outputs, and large arguments of old tool calls (file contents), are replaced by a short note;
+3. if that isn't enough, whole earlier requests are dropped, oldest first; the current request is always kept;
+4. as a last resort, the latest thinking goes too, then the largest remaining texts are shortened, keeping their
+   start and end.
 """
 
 import json
@@ -27,7 +29,9 @@ def estimate_tokens(value) -> int:
 
 def message_tokens(message: dict) -> int:
     calls = message.get("tool_calls") or []
-    return MESSAGE_OVERHEAD + estimate_tokens(message.get("content") or "") + (estimate_tokens(calls) if calls else 0)
+    thinking = message.get("thinking") or ""
+    return (MESSAGE_OVERHEAD + estimate_tokens(message.get("content") or "") + (estimate_tokens(calls) if calls else 0)
+            + (estimate_tokens(thinking) if thinking else 0))
 
 
 def total_tokens(messages: list[dict]) -> int:
@@ -37,6 +41,7 @@ def total_tokens(messages: list[dict]) -> int:
 @dataclass
 class Trimmed:
     messages: list[dict]
+    removed_thinking: int = 0
     removed_outputs: int = 0
     removed_requests: int = 0
     shortened: int = 0
@@ -44,10 +49,12 @@ class Trimmed:
 
     @property
     def changed(self) -> bool:
-        return bool(self.removed_outputs or self.removed_requests or self.shortened)
+        return bool(self.removed_thinking or self.removed_outputs or self.removed_requests or self.shortened)
 
     def describe(self) -> str:
         parts = []
+        if self.removed_thinking:
+            parts.append(f"removed the thinking from {self.removed_thinking} {'reply' if self.removed_thinking == 1 else 'replies'}")
         if self.removed_outputs:
             parts.append(f"removed {self.removed_outputs} old tool output(s)")
         if self.removed_requests:
@@ -72,7 +79,15 @@ def fit(messages: list[dict], budget: int) -> Trimmed:
     msgs = [dict(m) for m in messages]
     result.messages = msgs
 
-    # 1. Old tool outputs and large tool-call arguments, oldest first.
+    # 1. Thinking in earlier replies, oldest first; the latest reply keeps its plan.
+    thoughtful = [i for i, m in enumerate(msgs) if m.get("thinking")]
+    for i in thoughtful[:-1]:
+        if total_tokens(msgs) <= budget:
+            break
+        msgs[i] = {k: v for k, v in msgs[i].items() if k != "thinking"}
+        result.removed_thinking += 1
+
+    # 2. Old tool outputs and large tool-call arguments, oldest first.
     tool_results = [i for i, m in enumerate(msgs) if m["role"] == "tool"]
     recent = set(tool_results[-KEEP_RECENT_TOOL_RESULTS:])
     first_recent = min(recent) if recent else len(msgs)
@@ -87,7 +102,7 @@ def fit(messages: list[dict], budget: int) -> Trimmed:
         elif m["role"] == "assistant" and m.get("tool_calls"):
             msgs[i] = {**m, "tool_calls": [_without_large_arguments(call) for call in m["tool_calls"]]}
 
-    # 2. Whole earlier requests, oldest first. A request runs from one user request to the next.
+    # 3. Whole earlier requests, oldest first. A request runs from one user request to the next.
     current = max((i for i, m in enumerate(msgs) if is_request(m)), default=1)
     starts = [i for i, m in enumerate(msgs) if is_request(m) and 0 < i < current]
     if total_tokens(msgs) > budget and starts:
@@ -101,7 +116,11 @@ def fit(messages: list[dict], budget: int) -> Trimmed:
         msgs = [msgs[0], DROPPED_NOTE, *msgs[keep_from:]]
         result.messages = msgs
 
-    # 3. Shorten the largest remaining texts until it fits (or nothing large is left).
+    # 4. The latest reply's thinking, then shorten the largest remaining texts until it fits (or nothing large is left).
+    for i, m in enumerate(msgs):
+        if total_tokens(msgs) > budget and m.get("thinking"):
+            msgs[i] = {k: v for k, v in m.items() if k != "thinking"}
+            result.removed_thinking += 1
     while total_tokens(msgs) > budget:
         if len(msgs) < 2:
             result.fits = False

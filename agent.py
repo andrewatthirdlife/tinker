@@ -96,6 +96,12 @@ EMPTY_ANSWER_REMINDER = (
     "[Note from the agent, not the user. Your last reply was empty. Give your final answer now: what you found or "
     "changed, which commands you ran and what they showed, and anything that is still unfinished.]"
 )
+MAX_CUT_OFF_ROUNDS = 3
+CUT_OFF_REMINDER = (
+    "[Note from the agent, not the user. Your last reply was cut off at the length limit before it finished, so "
+    "nothing was done. Think less and take a smaller step: make one tool call now, and prefer edit_file on a few "
+    "lines over rewriting a whole file.]"
+)
 FAILED_COMMAND_REMINDER = (
     "[Note from the agent, not the user. The last command you ran failed: {command}. "
     "Fix the problem and run it again, or explain in your answer that it still fails.]"
@@ -145,6 +151,25 @@ def collect_reply(response) -> ChatResponse:
     message = Message(role="assistant", content="".join(content), thinking="".join(thinking) or None,
                       tool_calls=tool_calls or None)
     return ChatResponse(**{**(last.model_dump() if last else {}), "message": message})
+
+
+def _for_model(messages: list[dict]) -> list[dict]:
+    """The history as the model should see it.
+
+    Thinking goes back for the current request only, so the model keeps its plan between tool calls; earlier
+    requests' thinking is dropped, as is the thinking of a reply cut off at the length limit. The reply
+    statistics are kept for the session only.
+    """
+    current = max((i for i, m in enumerate(messages) if context.is_request(m)), default=0)
+    result = []
+    for i, m in enumerate(messages):
+        if m["role"] == "assistant":
+            drop = {"done_reason", "eval_count"}
+            if i < current or m.get("done_reason") == "length":
+                drop.add("thinking")
+            m = {k: v for k, v in m.items() if k not in drop}
+        result.append(m)
+    return result
 
 
 def _call_key(call: dict) -> tuple[str, str]:
@@ -274,21 +299,26 @@ class Agent:
         problems, self.tools.log.lint_existing = result
         return problems
 
-    def _next_reply(self, tools: list[dict]) -> tuple[str, list[dict]]:
+    def _next_reply(self, tools: list[dict]) -> tuple[str, list[dict], dict]:
         """Get the model's next reply, asking again if a tool call is missing required parameters.
 
         A reply like that is never added to the history: the model copies bad calls it can see.
+        Also returns the reply's thinking, why it stopped and its length, to keep with it in the history.
         """
         hint, temperature = [], self.config.temperature
         for attempt in range(MAX_CHAT_RETRIES + 1):
-            message = self._chat(tools, hint, temperature).message
+            response = self._chat(tools, hint, temperature)
+            message = response.message
+            extra = {k: v for k, v in (("thinking", getattr(message, "thinking", None)),
+                                       ("done_reason", getattr(response, "done_reason", None)),
+                                       ("eval_count", getattr(response, "eval_count", None))) if v}
             tool_calls = [c.model_dump() for c in message.tool_calls or []]
             content = message.content or ""
             if not tool_calls:
                 content, tool_calls = extract_text_tool_calls(content)
             problems = missing_arguments(tool_calls)
             if not problems or attempt == MAX_CHAT_RETRIES:
-                return content, tool_calls
+                return content, tool_calls, extra
             self.on_notice(f"Tool call without required parameters ({'; '.join(problems)}), asking again ({attempt + 1}/{MAX_CHAT_RETRIES})")
             hint = [{"role": "user", "content": MISSING_ARGS_HINT.format(problems="; ".join(problems))}]
             temperature = max(temperature, RETRY_TEMPERATURE)
@@ -313,7 +343,7 @@ class Agent:
         if summary := self.change_summary():
             # Placed last so the model sees it right before writing its answer, unlike the system prompt.
             reminders.append({"role": "user", "content": PROGRESS_REMINDER.format(summary=summary)})
-        messages = [*self.messages, *reminders, *hint]
+        messages = [*_for_model(self.messages), *reminders, *hint]
         for attempt in range(MAX_CHAT_RETRIES + 1):
             try:
                 return collect_reply(self.client.chat(
@@ -331,7 +361,7 @@ class Agent:
                     raise
                 self.on_notice(f"Ollama error, retrying ({attempt + 1}/{MAX_CHAT_RETRIES}): {e.error}")
                 # The hint is only for the retry; it is not kept in the history.
-                messages = [*self.messages, *reminders, *hint, {"role": "user", "content": MALFORMED_CALL_HINT}]
+                messages = [*_for_model(self.messages), *reminders, *hint, {"role": "user", "content": MALFORMED_CALL_HINT}]
                 temperature = max(temperature, RETRY_TEMPERATURE)
 
     def ask(self, question: str) -> str:
@@ -344,10 +374,11 @@ class Agent:
         failed_command_rounds = 0
         check_rounds = 0
         empty_answer_rounds = 0
+        cut_off_rounds = 0
 
         previous_call, previous_content = (None, None, None), None
         for _ in range(self.config.max_iterations):
-            content, tool_calls = self._next_reply(tools)
+            content, tool_calls, extra = self._next_reply(tools)
             if (content and content == previous_content and len(tool_calls) == 1
                     and tool_calls[0]["function"]["name"] not in WRITE_TOOLS
                     and _call_key(tool_calls[0]) == previous_call[:2]):
@@ -356,9 +387,15 @@ class Agent:
                 # repeat: some models re-read a file while still working, with new text each time.
                 self.on_notice(f"Repeated {tool_calls[0]['function']['name']} call; taking the reply as the final answer")
                 tool_calls = []
-            self._add({"role": "assistant", "content": content, "tool_calls": tool_calls})
+            self._add({"role": "assistant", "content": content, "tool_calls": tool_calls, **extra})
 
             if not tool_calls:
+                if extra.get("done_reason") == "length" and cut_off_rounds < MAX_CUT_OFF_ROUNDS:
+                    # The reply hit num_predict, usually while thinking, so it isn't an answer.
+                    cut_off_rounds += 1
+                    self.on_notice("The model's reply was cut off at the length limit; asking it to take a smaller step")
+                    self._add({"role": "user", "content": CUT_OFF_REMINDER})
+                    continue
                 if not content.strip() and empty_answer_rounds < MAX_EMPTY_ANSWER_ROUNDS:
                     # Thinking models sometimes reason, then end with no visible answer at all.
                     empty_answer_rounds += 1
