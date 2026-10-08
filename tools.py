@@ -23,6 +23,7 @@ NOT_FOUND_MAX_LINES = 30
 SNAPSHOT_MAX_FILE_BYTES = 1_000_000  # larger files are tracked by size and time only, so they can't be restored
 WRITE_TOOLS = {"edit_file", "write_file"}
 LINT_PROBLEM_RE = re.compile(r"^\S+:\d+:\d+: (.*)$")  # "path:line:col: CODE message"
+MAX_REWRITE_LINES = 100
 
 # Receives (path, diff); returns None to approve, or a rejection message for the model.
 ConfirmWrite = Callable[[str, str], str | None]
@@ -56,6 +57,7 @@ class ChangeLog:
     too_large: set[str] = field(default_factory=set)  # changed by commands, too large to show or restore
     reverted: list[str] = field(default_factory=list)  # changes by commands that the mode doesn't allow
     commands: list[str] = field(default_factory=list)  # commands run during this request, with their result
+    last_failed_command: str | None = None  # the last command run, if it failed
 
     def record(self, path: str, kind: str) -> None:
         # Keep the most significant change: a new file stays "created"; an edited file can become "rewritten".
@@ -254,6 +256,13 @@ class Tools:
             content = _strip_trailing_whitespace(content, old)
         if content and not content.endswith("\n"):
             content += "\n"
+
+        # Guard against rewriting large files in full
+        if existed and target.exists():
+            line_count = len(target.read_text().splitlines())
+            if line_count > MAX_REWRITE_LINES:
+                raise ToolError(f"{path} has {line_count} lines; rewriting it in full risks losing code. Use edit_file to change the parts that need changing.")
+
         warning = self._apply(path, target, old, content)
         self.log.record(path, "rewritten" if existed else "created")
         result = f"{'Overwrote' if existed else 'Created'} {path} ({len(content.splitlines())} lines)."
@@ -350,6 +359,10 @@ class Tools:
             raise ToolError(str(e))
         status = f"timed out after {timeout}s" if result.timed_out else f"exit code {result.returncode}"
         self.log.commands.append(f"{line} ({status})")
+        if result.timed_out or result.returncode != 0:
+            self.log.last_failed_command = f"{line} ({status})"
+        else:
+            self.log.last_failed_command = None
         half = self.command_settings.max_output_chars // 2
         return (f"$ {line}\n{status}, {result.seconds:.1f}s\n"
                 f"--- stdout ---\n{_shorten(result.stdout, half)}\n--- stderr ---\n{_shorten(result.stderr, half)}")

@@ -80,6 +80,12 @@ LINT_REMINDER = (
     "Fix these problems.]"
 )
 
+MAX_FAILED_COMMAND_ROUNDS = 1
+FAILED_COMMAND_REMINDER = (
+    "[Note from the agent, not the user. The last command you ran failed: {command}. "
+    "Fix the problem and run it again, or explain in your answer that it still fails.]"
+)
+
 REPEAT_NOTE = (
     "\n[Note from the agent: this call and its result are the same as your previous call, so nothing has "
     "changed. Do not repeat it. Continue with the task, or give your final answer without calling any tools.]"
@@ -282,6 +288,7 @@ class Agent:
         tools = self._available_tools()
         tool_names = {t["function"]["name"] for t in tools}
         lint_rounds = 0
+        failed_command_rounds = 0
 
         previous_call = (None, None, None)
         for _ in range(self.config.max_iterations):
@@ -303,6 +310,11 @@ class Agent:
                         self.on_notice(f"Lint found {len(problems)} problem(s); asking the model to fix them")
                         self._add({"role": "user", "content": LINT_REMINDER.format(problems="\n".join(problems))})
                         continue
+                if self.tools.log.last_failed_command is not None and failed_command_rounds < MAX_FAILED_COMMAND_ROUNDS:
+                    failed_command_rounds += 1
+                    self.on_notice(f"The last command failed ({self.tools.log.last_failed_command}); asking the model to deal with it")
+                    self._add({"role": "user", "content": FAILED_COMMAND_REMINDER.format(command=self.tools.log.last_failed_command)})
+                    continue
                 return content
 
             for call in tool_calls:
