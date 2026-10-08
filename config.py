@@ -57,6 +57,7 @@ class Config:
     default_mode: str
     modes: dict[str, Mode]
     commands: CommandSettings = field(default_factory=CommandSettings)
+    checks: list[str] = field(default_factory=list)  # commands run before a final answer after files changed
 
     def __post_init__(self):
         self.sessions_dir = Path(self.sessions_dir).expanduser()
@@ -105,8 +106,8 @@ def apply_project_config(config: Config, workspace: Path) -> list[str]:
         return [f"{PROJECT_CONFIG}: ignored, it must contain a JSON object"]
 
     for key in project_config:
-        if key not in ("modes", "default_mode"):
-            warnings.append(f"{PROJECT_CONFIG}: ignored {key!r}; a project config may only set modes and default_mode")
+        if key not in ("modes", "default_mode", "checks"):
+            warnings.append(f"{PROJECT_CONFIG}: ignored {key!r}; a project config may only set modes, default_mode and checks")
 
     # Handle invalid "modes" value
     modes_value = project_config.get("modes", {})
@@ -182,6 +183,13 @@ def apply_project_config(config: Config, workspace: Path) -> list[str]:
                     config.modes[name] = new_mode
                 except (TypeError, ValueError) as e:
                     warnings.append(f"{PROJECT_CONFIG}: mode {name!r}: ignored, {e}")
+
+    checks = project_config.get("checks")
+    if checks is not None:
+        if isinstance(checks, list) and all(isinstance(c, str) for c in checks):
+            config.checks = checks
+        else:
+            warnings.append(f"{PROJECT_CONFIG}: ignored 'checks'; it must be a list of commands")
 
     if "default_mode" in project_config:
         value = project_config["default_mode"]

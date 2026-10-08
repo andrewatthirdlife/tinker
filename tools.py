@@ -58,6 +58,7 @@ class ChangeLog:
     too_large: set[str] = field(default_factory=set)  # changed by commands, too large to show or restore
     reverted: list[str] = field(default_factory=list)  # changes by commands that the mode doesn't allow
     commands: list[str] = field(default_factory=list)  # commands run during this request, with their result
+    checks_failing: list[str] = field(default_factory=list)  # project checks still failing at the end
     last_failed_command: str | None = None  # the last command run, if it failed
 
     def record(self, path: str, kind: str) -> None:
@@ -88,6 +89,8 @@ class ChangeLog:
             if self.lint_existing:
                 problems = "problem was" if self.lint_existing == 1 else "problems were"
                 parts.append(f"{self.lint_existing} lint {problems} already there before this request")
+        if self.checks_failing:
+            parts.append("checks still failing: " + ", ".join(self.checks_failing))
         if self.commands:
             parts.append("ran " + ", ".join(self.commands))
         else:
@@ -258,8 +261,10 @@ class Tools:
         if content and not content.endswith("\n"):
             content += "\n"
 
-        # Guard against rewriting large files in full
-        if existed and target.exists():
+        # Guard against rewriting large files in full, except ones created during this request: there is no
+        # earlier code in them to lose.
+        created_now = self.log.originals.get(str(target.relative_to(self.root)), "") is None
+        if existed and not created_now:
             line_count = len(target.read_text().splitlines())
             if line_count > MAX_REWRITE_LINES:
                 raise ToolError(f"{path} has {line_count} lines; rewriting it in full risks losing code. Use edit_file to change the parts that need changing.")

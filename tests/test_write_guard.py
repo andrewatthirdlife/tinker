@@ -48,9 +48,9 @@ def test_existing_large_file_cannot_be_overwritten(workspace):
     """Test that existing large files cannot be overwritten with write_file."""
     tools = make_tools(workspace)
 
-    # Create a large file (more than MAX_REWRITE_LINES)
+    # A large file that existed before this request (more than MAX_REWRITE_LINES)
     large_content = "\n".join([f"line {i}" for i in range(150)]) + "\n"
-    tools.run("write_file", {"path": "large_file.py", "content": large_content})
+    (workspace / "large_file.py").write_text(large_content)
 
     # Try to overwrite it - this should fail
     result = tools.run("write_file", {"path": "large_file.py", "content": "print('new')\n"})
@@ -63,6 +63,16 @@ def test_existing_large_file_cannot_be_overwritten(workspace):
     # Verify the file is unchanged
     content = (workspace / "large_file.py").read_text()
     assert content == large_content
+
+
+def test_large_file_created_in_this_request_can_be_rewritten(workspace):
+    """The guard protects existing code; a file the agent created itself in this request has none to lose."""
+    tools = make_tools(workspace)
+    large_content = "\n".join([f"line {i}" for i in range(150)]) + "\n"
+    assert tools.run("write_file", {"path": "new_large.py", "content": large_content}).startswith("Created")
+    result = tools.run("write_file", {"path": "new_large.py", "content": "x = 1\n"})
+    assert result.startswith("Overwrote")
+    assert (workspace / "new_large.py").read_text() == "x = 1\n"
 
 
 def test_edit_file_still_works_on_large_files(workspace):

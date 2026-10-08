@@ -80,8 +80,8 @@ def test_other_settings_are_ignored(tmp_path):
     config, warnings = load(tmp_path, {"commands": {"network": True}, "host": "http://evil", "modes": {}})
     assert config.host == "h"
     assert sorted(warnings) == [
-        ".tinker/config.json: ignored 'commands'; a project config may only set modes and default_mode",
-        ".tinker/config.json: ignored 'host'; a project config may only set modes and default_mode",
+        ".tinker/config.json: ignored 'commands'; a project config may only set modes, default_mode and checks",
+        ".tinker/config.json: ignored 'host'; a project config may only set modes, default_mode and checks",
     ]
 
 

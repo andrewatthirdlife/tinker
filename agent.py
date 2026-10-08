@@ -1,5 +1,6 @@
 import json
 import re
+import shlex
 from pathlib import Path
 from typing import Callable
 
@@ -84,6 +85,12 @@ LINT_REMINDER = (
 )
 
 MAX_FAILED_COMMAND_ROUNDS = 1
+MAX_CHECK_ROUNDS = 3
+CHECK_REMINDER = (
+    "[Note from the agent, not the user. The project's checks failed after your changes:\n{failures}\n"
+    "Fix these problems. The task isn't finished until the checks pass.]"
+)
+CHECK_OUTPUT_CHARS = 3000
 MAX_EMPTY_ANSWER_ROUNDS = 1
 EMPTY_ANSWER_REMINDER = (
     "[Note from the agent, not the user. Your last reply was empty. Give your final answer now: what you found or "
@@ -234,6 +241,23 @@ class Agent:
         """Facts about file changes during the last request, independent of what the model claims."""
         return self.tools.log.summary()
 
+    def _run_checks(self) -> list[str]:
+        """Run the project's checks that the current mode allows; describe each failure with its output.
+
+        They go through run_command, so they are sandboxed and approved like any other command.
+        """
+        failures, failing = [], []
+        for command in self.config.checks:
+            if not self.tools.mode.can_run(" ".join(shlex.split(command))):
+                continue
+            self.on_tool_call("run_command", {"command": command})
+            result = self.tools.run("run_command", {"command": command})
+            if not re.search(r"^exit code 0,", result, re.M):
+                failing.append(command)
+                failures.append(result[:CHECK_OUTPUT_CHARS])
+        self.tools.log.checks_failing = failing
+        return failures
+
     def _lint_changed_files(self) -> list[str] | None:
         """Lint problems introduced during this request, or None if no Python file changed.
 
@@ -318,6 +342,7 @@ class Agent:
         tool_names = {t["function"]["name"] for t in tools}
         lint_rounds = 0
         failed_command_rounds = 0
+        check_rounds = 0
         empty_answer_rounds = 0
 
         previous_call, previous_content = (None, None, None), None
@@ -347,6 +372,13 @@ class Agent:
                         lint_rounds += 1
                         self.on_notice(f"Lint found {len(problems)} problem(s); asking the model to fix them")
                         self._add({"role": "user", "content": LINT_REMINDER.format(problems="\n".join(problems))})
+                        continue
+                if self.config.checks and self.tools.log.originals:
+                    failures = self._run_checks()
+                    if failures and check_rounds < MAX_CHECK_ROUNDS:
+                        check_rounds += 1
+                        self.on_notice(f"{len(failures)} check(s) failed; asking the model to fix them")
+                        self._add({"role": "user", "content": CHECK_REMINDER.format(failures="\n\n".join(failures))})
                         continue
                 if self.tools.log.last_failed_command is not None and failed_command_rounds < MAX_FAILED_COMMAND_ROUNDS:
                     failed_command_rounds += 1
