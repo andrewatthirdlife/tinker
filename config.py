@@ -14,6 +14,7 @@ class CommandSettings:
     extra_read: list[str] = field(default_factory=list)  # outside the checkout, readable by commands in every project
     network: bool = False
     projects: dict[str, dict] = field(default_factory=dict)  # project path -> {"extra_read": [...], "network": bool}
+    extra_path: list[str] = field(default_factory=list)  # folders added to commands' PATH, e.g. a toolchain's bin
 
     def __post_init__(self):
         for path, grants in self.projects.items():

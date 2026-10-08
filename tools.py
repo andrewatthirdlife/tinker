@@ -380,7 +380,7 @@ class Tools:
 
     def _command_env(self) -> dict[str, str]:
         env = {
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "PATH": ":".join(["/usr/local/bin", "/usr/bin", "/bin", *self.command_settings.extra_path]),
             "LANG": os.environ.get("LANG", "C.UTF-8"),
             # Commands often can't create files in the workspace root (it holds the read-only .git), so ask tools
             # not to write caches there: ruff fails outright without this, pytest warns.

@@ -11,21 +11,22 @@
   "commands": {
     "timeout_seconds": 120,
     "max_output_chars": 20000,
-    "allow_project_auto_approve": false
+    "allow_project_auto_approve": false,
+    "extra_path": ["/usr/local/go/bin"]
   },
   "modes": {
     "plan": {
       "description": "Explore and plan; no changes",
       "read": ["**"],
       "write": [],
-      "run": ["pytest*", "python -m pytest*", "ruff check*"]
+      "run": ["pytest*", "python -m pytest*", "ruff check*", "go vet*", "go test*", "go run*", "go build*"]
     },
     "edit": {
       "description": "Change anything in the workspace",
       "read": ["**"],
       "write": ["**"],
       "approve": "ask",
-      "run": ["pytest*", "python -m pytest*", "ruff check*"]
+      "run": ["pytest*", "python -m pytest*", "ruff check*", "go vet*", "go test*", "go run*", "go build*"]
     },
     "docs": {
       "description": "Read everything; write documentation only",
@@ -39,13 +40,13 @@
       "write": ["**"],
       "deny_write": ["tests/**", "**/test_*.py"],
       "instructions": "The tests define the required behaviour. Make the code pass them; if a test looks wrong, say so instead of working around it.",
-      "run": ["pytest*", "python -m pytest*", "ruff check*"]
+      "run": ["pytest*", "python -m pytest*", "ruff check*", "go vet*", "go test*", "go run*", "go build*"]
     },
     "bugfix": {
       "description": "Fix a bug, proving it with a test first",
       "read": ["**"],
       "write": ["**"],
-      "run": ["pytest*", "python -m pytest*", "ruff check*"],
+      "run": ["pytest*", "python -m pytest*", "ruff check*", "go vet*", "go test*", "go run*", "go build*"],
       "instructions": "Prove the bug before fixing it. First write a test that reproduces the problem, and run it to show that it fails. Only then change the code, and run the tests again to show that the new test passes and nothing else broke. Keep the new test: it guards against the bug coming back."
     }
   }
