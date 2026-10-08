@@ -146,6 +146,10 @@ def main() -> None:
 
     if session is None:
         session = Session.create(config.sessions_dir, workspace)
+
+    # One-shot runs can't ask for approval: an explicit --mode means "make that mode's changes", so they are approved
+    # automatically; without one, the safe default mode is used. Interactive sessions always ask.
+    if args.prompt is not None:
         if args.mode is not None:
             options.auto_approve = True
         else:
