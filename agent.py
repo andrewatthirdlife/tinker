@@ -43,7 +43,8 @@ When changing code:
 - Make the smallest change that achieves the goal and match the existing code style.
 - Only change what the request needs. If you notice other problems (lint warnings, bugs, style), mention them in your answer instead of fixing them.
 - Changes may need the user's approval. If a change is rejected, follow the user's feedback.
-- You cannot run commands, so you cannot run tests or commit. Changes are left uncommitted for the user to review.
+- If the current mode lets you run commands, run the relevant tests after changing code and fix any failures you caused.
+- You cannot commit. Changes are left uncommitted for the user to review.
 
 Before your final answer after changing code:
 - Call review_changes and check the diff against each thing the user asked for.
@@ -53,7 +54,7 @@ Before your final answer after changing code:
 
 Your final answer must be accurate, not reassuring:
 - Describe what you changed in a few lines. Do not repeat the user's request back as a checklist.
-- Never claim code works, is correct or has been tested. You cannot run it, so say that it has not been run.
+- Never claim code works, is correct or has been tested unless a command you ran during this request showed it. If you didn't run it, say so.
 - Report anything that went wrong: failed edits, rejected changes, requirements you did not meet, and anything you are unsure about.
 - Do not use praise or filler such as "Perfect!", "Excellent!" or "All requirements have been met".
 - Be concise and direct."""
@@ -68,7 +69,7 @@ MALFORMED_CALL_HINT = (
 PROGRESS_REMINDER = (
     "[Note from the agent, not the user. So far in this task: {summary}. "
     "Continue if the task is not finished. In your final answer, mention any failed edits and any files "
-    "that were rewritten in full, and say that the code has not been run.]"
+    "that were rewritten in full, and say which commands you ran and what they showed, or that the code has not been run.]"
 )
 
 MAX_LINT_ROUNDS = 2
@@ -164,6 +165,7 @@ class Agent:
             f"Current mode: {mode.name} ({mode.description}).",
             mode.describe_reads(),
             mode.describe_writes(),
+            mode.describe_commands(),
         ]
         if mode.instructions:
             lines.append(mode.instructions)
@@ -183,9 +185,13 @@ class Agent:
         return {"role": "system", "content": prompt}
 
     def _available_tools(self) -> list[dict]:
-        if self.config.modes[self.mode].write:
-            return SCHEMAS
-        return [s for s in SCHEMAS if s["function"]["name"] not in WRITE_TOOLS]
+        mode = self.config.modes[self.mode]
+        tools = SCHEMAS
+        if not mode.write:
+            tools = [s for s in tools if s["function"]["name"] not in WRITE_TOOLS]
+        if not mode.run:
+            tools = [s for s in tools if s["function"]["name"] != "run_command"]
+        return tools
 
     def _add(self, message: dict) -> None:
         self.messages.append(message)
