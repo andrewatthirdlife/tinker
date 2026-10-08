@@ -5,6 +5,7 @@ from typing import Callable
 
 from ollama import Client, ResponseError
 
+import context
 from config import Config
 from session import Session
 from tools import SCHEMAS, WRITE_TOOLS, ChangeLog, ConfirmCommand, ConfirmWrite, ToolError, Tools
@@ -60,6 +61,7 @@ Your final answer must be accurate, not reassuring:
 - Be concise and direct."""
 
 MAX_CHAT_RETRIES = 2
+REPLY_TOKENS = 8192  # room left in the context window for the model's reply, e.g. a whole file for write_file
 RETRY_TEMPERATURE = 0.7
 MALFORMED_CALL_HINT = (
     "Your previous response could not be parsed because the tool call was malformed. "
@@ -151,6 +153,7 @@ class Agent:
         self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write, config.lint_args, config.modes[session.mode], confirm_command=confirm_command, command_settings=config.commands)
         self.on_tool_call = on_tool_call
         self.on_notice = on_notice
+        self._last_trim_notice = ""
         self.session = session
         # Always use the current system prompt, including when resuming an older session.
         self.messages: list[dict] = [self._system_message(), *session.messages[1:]]
@@ -237,6 +240,17 @@ class Agent:
             hint = [{"role": "user", "content": MISSING_ARGS_HINT.format(problems="; ".join(problems))}]
             temperature = max(temperature, RETRY_TEMPERATURE)
 
+    def _fit_context(self, messages: list[dict], tools: list[dict]) -> list[dict]:
+        """Trim a copy of the messages to the context window; Ollama would otherwise cut them silently."""
+        reply = min(REPLY_TOKENS, self.config.num_ctx // 4)
+        trimmed = context.fit(messages, self.config.num_ctx - reply - context.estimate_tokens(tools))
+        if trimmed.changed or not trimmed.fits:
+            notice = trimmed.describe()
+            if notice != self._last_trim_notice:
+                self.on_notice(notice)
+                self._last_trim_notice = notice
+        return trimmed.messages
+
     def _chat(self, tools: list[dict], hint: list[dict], temperature: float):
         """Call the model, retrying when Ollama fails to parse the model's tool call (HTTP 500)."""
         # Reminders are added for this call only and are not kept in the history.
@@ -249,7 +263,7 @@ class Agent:
             try:
                 return self.client.chat(
                     model=self.config.model,
-                    messages=messages,
+                    messages=self._fit_context(messages, tools),
                     tools=tools,
                     options={"num_ctx": self.config.num_ctx, "temperature": temperature},
                 )
