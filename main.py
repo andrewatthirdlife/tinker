@@ -3,6 +3,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from ollama import ResponseError
 
 from agent import Agent
@@ -45,6 +46,9 @@ def run_once(agent: Agent, session: Session, prompt: str) -> int:
         exit_code = 1
     except ResponseError as e:
         print(f"Ollama error: {e.error}", file=sys.stderr)
+        exit_code = 1
+    except httpx.TimeoutException:
+        print("Error: the model didn't reply in time.", file=sys.stderr)
         exit_code = 1
 
     summary = agent.change_summary()
@@ -209,6 +213,8 @@ def main() -> None:
             print(f"\nError: {e}\nIs the Ollama machine asleep? Wake it up and ask again.\n")
         except ResponseError as e:
             print(f"\nOllama error: {e.error}\nThe session is saved; you can ask again or rephrase.\n")
+        except httpx.TimeoutException:
+            print("\nError: the model didn't reply in time. The session is saved; you can ask again or rephrase.\n")
         if summary := agent.change_summary():
             print(f"\033[33m[{summary}]\033[0m\n")
 

@@ -62,6 +62,7 @@ Your final answer must be accurate, not reassuring:
 
 MAX_CHAT_RETRIES = 2
 REPLY_TOKENS = 8192  # room left in the context window for the model's reply, e.g. a whole file for write_file
+REQUEST_TIMEOUT_SECONDS = 600  # one reply from the model; without a limit a runaway reply hangs Tinker
 RETRY_TEMPERATURE = 0.7
 MALFORMED_CALL_HINT = (
     "Your previous response could not be parsed because the tool call was malformed. "
@@ -153,7 +154,7 @@ class Agent:
         confirm_command: ConfirmCommand,
     ):
         self.config = config
-        self.client = Client(host=config.host)
+        self.client = Client(host=config.host, timeout=REQUEST_TIMEOUT_SECONDS)
         if session.mode not in config.modes:
             session.mode = config.default_mode
         self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write, config.lint_args, config.modes[session.mode], confirm_command=confirm_command, command_settings=config.commands)
@@ -246,10 +247,12 @@ class Agent:
             hint = [{"role": "user", "content": MISSING_ARGS_HINT.format(problems="; ".join(problems))}]
             temperature = max(temperature, RETRY_TEMPERATURE)
 
+    def _reply_tokens(self) -> int:
+        return min(REPLY_TOKENS, self.config.num_ctx // 4)
+
     def _fit_context(self, messages: list[dict], tools: list[dict]) -> list[dict]:
         """Trim a copy of the messages to the context window; Ollama would otherwise cut them silently."""
-        reply = min(REPLY_TOKENS, self.config.num_ctx // 4)
-        trimmed = context.fit(messages, self.config.num_ctx - reply - context.estimate_tokens(tools))
+        trimmed = context.fit(messages, self.config.num_ctx - self._reply_tokens() - context.estimate_tokens(tools))
         if trimmed.changed or not trimmed.fits:
             notice = trimmed.describe()
             if notice != self._last_trim_notice:
@@ -271,7 +274,10 @@ class Agent:
                     model=self.config.model,
                     messages=self._fit_context(messages, tools),
                     tools=tools,
-                    options={"num_ctx": self.config.num_ctx, "temperature": temperature},
+                    # num_predict caps the reply: some models (thinking ones especially) can otherwise generate
+                    # without end.
+                    options={"num_ctx": self.config.num_ctx, "temperature": temperature,
+                             "num_predict": self._reply_tokens()},
                 )
             except ResponseError as e:
                 if e.status_code != 500 or attempt == MAX_CHAT_RETRIES:
@@ -290,13 +296,15 @@ class Agent:
         lint_rounds = 0
         failed_command_rounds = 0
 
-        previous_call = (None, None, None)
+        previous_call, previous_content = (None, None, None), None
         for _ in range(self.config.max_iterations):
             content, tool_calls = self._next_reply(tools)
-            if (content and len(tool_calls) == 1 and tool_calls[0]["function"]["name"] not in WRITE_TOOLS
+            if (content and content == previous_content and len(tool_calls) == 1
+                    and tool_calls[0]["function"]["name"] not in WRITE_TOOLS
                     and _call_key(tool_calls[0]) == previous_call[:2]):
-                # The model keeps re-running the same read-only check alongside a finished answer; its result
-                # cannot have changed, so take the text as the final answer instead of looping.
+                # The model keeps sending the same finished answer with the same read-only check; the check's
+                # result can't have changed, so take the text as the final answer instead of looping. Both must
+                # repeat: some models re-read a file while still working, with new text each time.
                 self.on_notice(f"Repeated {tool_calls[0]['function']['name']} call; taking the reply as the final answer")
                 tool_calls = []
             self._add({"role": "assistant", "content": content, "tool_calls": tool_calls})
@@ -329,7 +337,7 @@ class Agent:
                 this_call = (*_call_key(call), result)
                 if this_call == previous_call:
                     result += REPEAT_NOTE
-                previous_call = this_call
+                previous_call, previous_content = this_call, content
                 self._add({"role": "tool", "tool_name": name, "content": result})
 
         return f"[Stopped after {self.config.max_iterations} iterations without a final answer]"
