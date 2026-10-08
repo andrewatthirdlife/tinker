@@ -2,6 +2,7 @@ import ast
 import difflib
 import os
 import re
+import shlex
 import subprocess
 import sys
 from collections import Counter
@@ -109,6 +110,7 @@ class Tools:
             "edit_file": self.edit_file,
             "review_changes": self.review_changes,
             "lint": self.lint,
+            "run_command": self.run_command,
         }
 
     def run(self, name: str, args: dict) -> str:
@@ -327,6 +329,30 @@ class Tools:
             diffs.append(diff or f"{rel}: changed and then changed back; no difference now")
         diffs += [f"{rel}: changed by a command (too large to show)" for rel in sorted(self.log.too_large)]
         return "\n".join(diffs)
+
+    def run_command(self, command: str) -> str:
+        try:
+            argv = shlex.split(command)
+        except ValueError as e:
+            raise ToolError(f"could not parse the command: {e}")
+        if not argv:
+            raise ToolError("the command is empty")
+        line = " ".join(argv)
+        if not self.mode.can_run(line):
+            raise ToolError(f"{line!r} is not allowed in {self.mode.name} mode. {self.mode.describe_commands()}")
+        rejection = self.confirm_command(line)
+        if rejection is not None:
+            raise Rejected(rejection)
+        timeout = self.command_settings.timeout_seconds
+        try:
+            result = self.run_sandboxed(argv, timeout)
+        except sandbox.SandboxError as e:
+            raise ToolError(str(e))
+        status = f"timed out after {timeout}s" if result.timed_out else f"exit code {result.returncode}"
+        self.log.commands.append(f"{line} ({status})")
+        half = self.command_settings.max_output_chars // 2
+        return (f"$ {line}\n{status}, {result.seconds:.1f}s\n"
+                f"--- stdout ---\n{_shorten(result.stdout, half)}\n--- stderr ---\n{_shorten(result.stderr, half)}")
 
     def run_sandboxed(self, argv: list[str], timeout: float) -> sandbox.Result:
         """Run a command in the sandbox under the current mode, then check and record what it changed."""
