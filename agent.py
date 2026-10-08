@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from typing import Callable
 
-from ollama import Client, ResponseError
+from ollama import ChatResponse, Client, Message, ResponseError
 
 import context
 from config import Config
@@ -62,7 +62,9 @@ Your final answer must be accurate, not reassuring:
 
 MAX_CHAT_RETRIES = 2
 REPLY_TOKENS = 8192  # room left in the context window for the model's reply, e.g. a whole file for write_file
-REQUEST_TIMEOUT_SECONDS = 600  # one reply from the model; without a limit a runaway reply hangs Tinker
+# Replies are streamed, so this is the longest the model may go without sending anything. It must allow for
+# loading the model and reading a long prompt before the first output, but a slow reply that keeps coming is fine.
+SILENCE_TIMEOUT_SECONDS = 300
 RETRY_TEMPERATURE = 0.7
 MALFORMED_CALL_HINT = (
     "Your previous response could not be parsed because the tool call was malformed. "
@@ -82,6 +84,11 @@ LINT_REMINDER = (
 )
 
 MAX_FAILED_COMMAND_ROUNDS = 1
+MAX_EMPTY_ANSWER_ROUNDS = 1
+EMPTY_ANSWER_REMINDER = (
+    "[Note from the agent, not the user. Your last reply was empty. Give your final answer now: what you found or "
+    "changed, which commands you ran and what they showed, and anything that is still unfinished.]"
+)
 FAILED_COMMAND_REMINDER = (
     "[Note from the agent, not the user. The last command you ran failed: {command}. "
     "Fix the problem and run it again, or explain in your answer that it still fails.]"
@@ -116,6 +123,21 @@ def _coerce(tool: str, param: str, value: str):
         except ValueError:
             pass
     return value
+
+
+def collect_reply(response) -> ChatResponse:
+    """Put a streamed reply back together: text and thinking arrive in pieces, each tool call in one piece."""
+    if hasattr(response, "message"):  # a whole reply, not a stream
+        return response
+    content, thinking, tool_calls, last = [], [], [], None
+    for chunk in response:
+        content.append(chunk.message.content or "")
+        thinking.append(chunk.message.thinking or "")
+        tool_calls += chunk.message.tool_calls or []
+        last = chunk
+    message = Message(role="assistant", content="".join(content), thinking="".join(thinking) or None,
+                      tool_calls=tool_calls or None)
+    return ChatResponse(**{**(last.model_dump() if last else {}), "message": message})
 
 
 def _call_key(call: dict) -> tuple[str, str]:
@@ -154,7 +176,7 @@ class Agent:
         confirm_command: ConfirmCommand,
     ):
         self.config = config
-        self.client = Client(host=config.host, timeout=REQUEST_TIMEOUT_SECONDS)
+        self.client = Client(host=config.host, timeout=SILENCE_TIMEOUT_SECONDS)
         if session.mode not in config.modes:
             session.mode = config.default_mode
         self.tools = Tools(Path(session.workspace), config.max_tool_output_chars, confirm_write, config.lint_args, config.modes[session.mode], confirm_command=confirm_command, command_settings=config.commands)
@@ -270,7 +292,7 @@ class Agent:
         messages = [*self.messages, *reminders, *hint]
         for attempt in range(MAX_CHAT_RETRIES + 1):
             try:
-                return self.client.chat(
+                return collect_reply(self.client.chat(
                     model=self.config.model,
                     messages=self._fit_context(messages, tools),
                     tools=tools,
@@ -278,7 +300,8 @@ class Agent:
                     # without end.
                     options={"num_ctx": self.config.num_ctx, "temperature": temperature,
                              "num_predict": self._reply_tokens()},
-                )
+                    stream=True,
+                ))
             except ResponseError as e:
                 if e.status_code != 500 or attempt == MAX_CHAT_RETRIES:
                     raise
@@ -295,6 +318,7 @@ class Agent:
         tool_names = {t["function"]["name"] for t in tools}
         lint_rounds = 0
         failed_command_rounds = 0
+        empty_answer_rounds = 0
 
         previous_call, previous_content = (None, None, None), None
         for _ in range(self.config.max_iterations):
@@ -310,6 +334,12 @@ class Agent:
             self._add({"role": "assistant", "content": content, "tool_calls": tool_calls})
 
             if not tool_calls:
+                if not content.strip() and empty_answer_rounds < MAX_EMPTY_ANSWER_ROUNDS:
+                    # Thinking models sometimes reason, then end with no visible answer at all.
+                    empty_answer_rounds += 1
+                    self.on_notice("The model gave an empty answer; asking it for one")
+                    self._add({"role": "user", "content": EMPTY_ANSWER_REMINDER})
+                    continue
                 problems = self._lint_changed_files()
                 if problems is not None:
                     self.tools.log.lint_problems = len(problems)
