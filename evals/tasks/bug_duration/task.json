@@ -1,0 +1,2 @@
+{"kind": "bugfix", "mode": "bugfix", "description": "Durations with only hours are rejected",
+ "prompt": "Bug report: parse_duration(\"2h\") in durations.py raises ValueError, but durations with only hours, or only minutes, should work: \"2h\" is 120 minutes. Please fix it."}

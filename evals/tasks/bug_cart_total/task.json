@@ -1,0 +1,2 @@
+{"kind": "bugfix", "mode": "bugfix", "description": "A total that changes the cart",
+ "prompt": "Bug report: calling total() on a Cart (cart.py) with a discount gives a different answer the second time it is called. Please fix it."}

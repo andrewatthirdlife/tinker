@@ -40,6 +40,13 @@
       "deny_write": ["tests/**", "**/test_*.py"],
       "instructions": "The tests define the required behaviour. Make the code pass them; if a test looks wrong, say so instead of working around it.",
       "run": ["pytest*", "python -m pytest*", "ruff check*"]
+    },
+    "bugfix": {
+      "description": "Fix a bug, proving it with a test first",
+      "read": ["**"],
+      "write": ["**"],
+      "run": ["pytest*", "python -m pytest*", "ruff check*"],
+      "instructions": "Prove the bug before fixing it. First write a test that reproduces the problem, and run it to show that it fails. Only then change the code, and run the tests again to show that the new test passes and nothing else broke. Keep the new test: it guards against the bug coming back."
     }
   }
 }

@@ -1,0 +1,2 @@
+{"kind": "bugfix", "mode": "bugfix", "description": "Inclusive date range misses its end",
+ "prompt": "Bug report: days_between in dates.py is documented to include both dates, but days_between(\"2026-01-30\", \"2026-02-01\") leaves out 2026-02-01. Please fix it."}

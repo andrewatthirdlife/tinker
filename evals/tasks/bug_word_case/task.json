@@ -1,0 +1,2 @@
+{"kind": "bugfix", "mode": "bugfix", "description": "Word counts split by case",
+ "prompt": "Bug report: count_words in words.py counts \"The\" and \"the\" as different words, so count_words(\"The cat saw the dog\") reports two different words where there should be one word counted twice. Please fix it."}

@@ -1,0 +1,2 @@
+{"kind": "bugfix", "mode": "bugfix", "description": "Median of an even number of values",
+ "prompt": "Bug report: median([1, 2, 3, 4]) in stats.py returns 3. The median of an even number of values should be the mean of the two middle values, so it should return 2.5. Please fix it."}
