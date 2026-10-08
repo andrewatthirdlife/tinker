@@ -22,6 +22,7 @@ NOT_FOUND_MIN_SIMILARITY = 0.4
 NOT_FOUND_MAX_LINES = 30
 SNAPSHOT_MAX_FILE_BYTES = 1_000_000  # larger files are tracked by size and time only, so they can't be restored
 WRITE_TOOLS = {"edit_file", "write_file"}
+SHELL_SYNTAX = {"|", "||", "&&", ";", ">", ">>", "<", "2>&1", "&"}
 LINT_PROBLEM_RE = re.compile(r"^\S+:\d+:\d+: (.*)$")  # "path:line:col: CODE message"
 MAX_REWRITE_LINES = 100
 
@@ -339,7 +340,7 @@ class Tools:
         diffs += [f"{rel}: changed by a command (too large to show)" for rel in sorted(self.log.too_large)]
         return "\n".join(diffs)
 
-    def run_command(self, command: str) -> str:
+    def run_command(self, command: str, input: str | None = None) -> str:
         try:
             argv = shlex.split(command)
         except ValueError as e:
@@ -348,13 +349,17 @@ class Tools:
             raise ToolError("the command is empty")
         line = " ".join(argv)
         if not self.mode.can_run(line):
-            raise ToolError(f"{line!r} is not allowed in {self.mode.name} mode. {self.mode.describe_commands()}")
+            message = f"{line!r} is not one of the commands {self.mode.name} mode allows. {self.mode.describe_commands()}"
+            if SHELL_SYNTAX & set(argv):
+                message += (" Commands run without a shell, so |, &&, ; and redirection such as > or 2>&1 don't work:"
+                            " run one program at a time, and use the input parameter to send text to a program.")
+            raise ToolError(message)
         rejection = self.confirm_command(line)
         if rejection is not None:
             raise Rejected(rejection)
         timeout = self.command_settings.timeout_seconds
         try:
-            result = self.run_sandboxed(argv, timeout)
+            result = self.run_sandboxed(argv, timeout, input=input)
         except sandbox.SandboxError as e:
             raise ToolError(str(e))
         status = f"timed out after {timeout}s" if result.timed_out else f"exit code {result.returncode}"
@@ -367,14 +372,14 @@ class Tools:
         return (f"$ {line}\n{status}, {result.seconds:.1f}s\n"
                 f"--- stdout ---\n{_shorten(result.stdout, half)}\n--- stderr ---\n{_shorten(result.stderr, half)}")
 
-    def run_sandboxed(self, argv: list[str], timeout: float) -> sandbox.Result:
+    def run_sandboxed(self, argv: list[str], timeout: float, input: str | None = None) -> sandbox.Result:
         """Run a command in the sandbox under the current mode, then check and record what it changed."""
         before = self._snapshot()
         extra_read, network = self.command_settings.grants_for(self.root)
         rules = {**{path: "ro" for path in extra_read}, **sandbox_rules(self.root, self.mode)}
         policy = sandbox.Policy(rules=rules, cwd=str(self.root), env=self._command_env(), network=network)
         try:
-            return sandbox.run(argv, policy, timeout)
+            return sandbox.run(argv, policy, timeout, input=input)
         finally:
             self._check_command_changes(before)
 
@@ -386,6 +391,8 @@ class Tools:
             # not to write caches there: ruff fails outright without this, pytest warns.
             "RUFF_NO_CACHE": "true",
             "PYTEST_ADDOPTS": "-p no:cacheprovider",
+            # Go stamps builds with version-control details by reading .git, which the sandbox may hide.
+            "GOFLAGS": "-buildvcs=false",
         }
         venv = self.root / ".venv"
         if venv.is_dir():
@@ -695,11 +702,12 @@ SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "Run a command in a sandbox, for example to run the tests. It can read the workspace, can only change files the current mode allows, and has no network access. The command is not run through a shell, so pipes, redirection and && don't work. Only commands the current mode allows can be run.",
+            "description": "Run a command in a sandbox, for example to run the tests. It can read the workspace, can only change files the current mode allows, and only has network access if the global config grants it for this project. The command is not run through a shell, so pipes, redirection and && don't work. Only commands the current mode allows can be run. To give a program input, use the input parameter.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "The command line, e.g. 'pytest -q tests/test_calc.py'."},
+                    "input": {"type": "string", "description": "Text to send to the command's standard input, for example requests and answers for an interactive program. End each line with a newline; the program sees end of input after the last line."},
                 },
                 "required": ["command"],
             },

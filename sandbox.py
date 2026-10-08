@@ -94,8 +94,9 @@ class Result:
     timed_out: bool = False
 
 
-def run(argv: list[str], policy: Policy, timeout: float) -> Result:
-    """Run argv in the sandbox. A private temporary directory is added and used as TMPDIR and HOME."""
+def run(argv: list[str], policy: Policy, timeout: float, input: str | None = None) -> Result:
+    """Run argv in the sandbox. A private temporary directory is added and used as TMPDIR and HOME.
+    input, if given, is sent to the command's standard input; otherwise it gets none."""
     tmp = tempfile.mkdtemp(prefix="tinker-")
     try:
         system = {path: "ro" for path in [*SYSTEM_READ_ONLY, "/proc"]} | {path: "dev" for path in DEVICES}
@@ -110,11 +111,11 @@ def run(argv: list[str], policy: Policy, timeout: float) -> Result:
         start = time.monotonic()
         proc = subprocess.Popen(
             [sys.executable, "-I", os.path.abspath(__file__), json.dumps(asdict(policy)), "--", *argv],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdin=subprocess.DEVNULL if input is None else subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             errors="replace", start_new_session=True,
         )
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(input=input, timeout=timeout)
             timed_out = False
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)

@@ -47,9 +47,23 @@ def test_runs_an_allowed_command(workspace):
 def test_refuses_commands_the_mode_does_not_allow(workspace):
     tools, asked = make_tools(workspace)
     out = tools.run("run_command", {"command": "rm -rf ."})
-    assert out == "Error: 'rm -rf .' is not allowed in test mode. You can run commands matching: python3 -c*."
+    assert out == "Error: 'rm -rf .' is not one of the commands test mode allows. You can run commands matching: python3 -c*."
     assert asked == []
     assert (workspace / "calc.py").exists()
+
+
+def test_refusal_explains_there_is_no_shell(workspace):
+    tools, _ = make_tools(workspace)
+    out = tools.run("run_command", {"command": "echo quit | ./agent"})
+    assert "run without a shell" in out and "input parameter" in out
+    assert "without a shell" not in tools.run("run_command", {"command": "rm -rf ."})  # only mentioned when relevant
+
+
+def test_input_reaches_the_program(workspace):
+    tools, _ = make_tools(workspace)
+    out = tools.run("run_command", {"command": "python3 -c 'import sys; print(sys.stdin.read().split())'",
+                                    "input": "hello\nquit\n"})
+    assert "--- stdout ---\n['hello', 'quit']" in out
 
 
 def test_mode_without_commands(workspace):
