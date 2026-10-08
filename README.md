@@ -1,6 +1,6 @@
 # Tinker - A Coding Agent
 
-Tinker is a Python-based coding agent that leverages Ollama for language model capabilities. It runs a local model through Ollama (default qwen3-coder) and works on one workspace directory.
+Tinker is a Python-based coding agent that leverages Ollama for language model capabilities. It runs a local model through Ollama (default `ornith`, a 9B model; see EVALUATION_RESULTS.md) and works on one workspace directory.
 
 ## Overview
 
@@ -42,7 +42,7 @@ The agent uses `config.json` for configuration:
 ```json
 {
   "host": "http://192.168.0.174:11434",
-  "model": "qwen3-coder:latest",
+  "model": "ornith:latest",
   "num_ctx": 65536,
   "temperature": 0.2,
   "max_iterations": 40,

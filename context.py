@@ -12,7 +12,7 @@ conversation, including the request it is working on. So the agent trims a copy 
 import json
 from dataclasses import dataclass
 
-CHARS_PER_TOKEN = 3.5  # measured 3.7-4.6 for qwen3-coder on code, prose and JSON; lower is safer
+CHARS_PER_TOKEN = 2.8  # measured 3.0-4.6 across qwen3-coder, ornith and laguna on code, prose and JSON; lower is safer
 MESSAGE_OVERHEAD = 10  # tokens for the role markers around each message
 KEEP_RECENT_TOOL_RESULTS = 4
 LARGE_ARGUMENT_CHARS = 500
