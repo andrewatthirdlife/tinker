@@ -357,7 +357,9 @@ class Tools:
     def run_sandboxed(self, argv: list[str], timeout: float) -> sandbox.Result:
         """Run a command in the sandbox under the current mode, then check and record what it changed."""
         before = self._snapshot()
-        policy = sandbox.Policy(rules=sandbox_rules(self.root, self.mode), cwd=str(self.root), env=self._command_env())
+        extra_read, network = self.command_settings.grants_for(self.root)
+        rules = {**{path: "ro" for path in extra_read}, **sandbox_rules(self.root, self.mode)}
+        policy = sandbox.Policy(rules=rules, cwd=str(self.root), env=self._command_env(), network=network)
         try:
             return sandbox.run(argv, policy, timeout)
         finally:
