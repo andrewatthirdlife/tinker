@@ -1,4 +1,5 @@
 import argparse
+import readline
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,6 +105,24 @@ def handle_command(command: str, agent: Agent, config: Config, options: RunOptio
         print(help_text(config))
 
 
+def setup_line_editing(history_file: Path) -> None:
+    """Cursor movement, editing and history (Up arrow) for typed input, kept across sessions in history_file."""
+    readline.set_auto_history(False)  # only questions go in the history, not answers to approval prompts
+    readline.set_history_length(1000)
+    try:
+        readline.read_history_file(history_file)
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def save_line_history(history_file: Path) -> None:
+    try:
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+        readline.write_history_file(history_file)
+    except OSError as e:
+        print(f"Could not save input history: {e}", file=sys.stderr)
+
+
 def list_sessions(sessions_dir: Path) -> None:
     sessions = Session.list_all(sessions_dir)
     if not sessions:
@@ -198,9 +217,14 @@ def main() -> None:
     print(help_text(config))
     print(f"\nAuto-approval of file changes and commands is {'on' if options.auto_approve else 'off'}.\n")
 
+    history_file = config.sessions_dir.parent / "history"
+    setup_line_editing(history_file)
     while True:
         try:
             question = input(f"[{agent.mode}] > ").strip()
+            length = readline.get_current_history_length()
+            if question not in ("", "exit", "quit") and (not length or readline.get_history_item(length) != question):
+                readline.add_history(question)
         except (EOFError, KeyboardInterrupt):
             print()
             break
@@ -222,6 +246,7 @@ def main() -> None:
         if summary := agent.change_summary():
             print(f"\033[33m[{summary}]\033[0m\n")
 
+    save_line_history(history_file)
     print(f"Resume with: --resume {session.id}")
 
 
