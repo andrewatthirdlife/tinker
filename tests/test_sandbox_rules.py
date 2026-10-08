@@ -1,5 +1,6 @@
 """Turning a mode's path patterns into sandbox rules, and checking those rules in a real sandbox."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -8,6 +9,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import sandbox  # noqa: E402
 from permissions import Mode, could_match_under, matches_everything_under, sandbox_rules  # noqa: E402
+
+# These tests start sandboxes, which can't be done from inside one (e.g. when Tinker runs the tests).
+pytestmark = pytest.mark.skipif("TINKER_SANDBOXED" in os.environ, reason="can't start a sandbox inside a sandbox")
 
 MODES = {
     "plan": Mode(name="plan", description="d", write=[]),

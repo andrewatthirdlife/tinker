@@ -102,7 +102,8 @@ def run(argv: list[str], policy: Policy, timeout: float) -> Result:
         policy = Policy(
             rules={**system, "/dev/shm": "rw", **policy.rules, tmp: "rw"},
             cwd=policy.cwd,
-            env={**policy.env, "TMPDIR": tmp, "HOME": tmp},
+            # TINKER_SANDBOXED tells tests that a sandbox can't be started from here: nesting is refused.
+            env={**policy.env, "TMPDIR": tmp, "HOME": tmp, "TINKER_SANDBOXED": "1"},
             network=policy.network,
             limits=policy.limits,
         )

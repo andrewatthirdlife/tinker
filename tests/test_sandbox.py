@@ -11,6 +11,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import sandbox  # noqa: E402
 
+# These tests start sandboxes, which can't be done from inside one (e.g. when Tinker runs the tests).
+pytestmark = pytest.mark.skipif("TINKER_SANDBOXED" in os.environ, reason="can't start a sandbox inside a sandbox")
+
 PYTHON = "/usr/bin/python3"  # the system interpreter: Tinker's own .venv is outside the test workspace
 
 

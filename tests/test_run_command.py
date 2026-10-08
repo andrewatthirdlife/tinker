@@ -1,5 +1,6 @@
 """The run_command tool: which commands may run, approval, output, and the sandbox around them."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import CommandSettings  # noqa: E402
 from permissions import Mode  # noqa: E402
 from tools import Tools  # noqa: E402
+
+# These tests start sandboxes, which can't be done from inside one (e.g. when Tinker runs the tests).
+pytestmark = pytest.mark.skipif("TINKER_SANDBOXED" in os.environ, reason="can't start a sandbox inside a sandbox")
 
 RUN = ["python3 -c*"]
 

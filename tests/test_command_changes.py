@@ -1,5 +1,6 @@
 """Running a command through Tools: what it changed is recorded, and changes the mode doesn't allow are undone."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tools as tools_module  # noqa: E402
 from permissions import Mode  # noqa: E402
 from tools import SNAPSHOT_MAX_FILE_BYTES, Tools  # noqa: E402
+
+# These tests start sandboxes, which can't be done from inside one (e.g. when Tinker runs the tests).
+pytestmark = pytest.mark.skipif("TINKER_SANDBOXED" in os.environ, reason="can't start a sandbox inside a sandbox")
 
 PYTHON = "/usr/bin/python3"
 MODES = {
