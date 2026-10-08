@@ -21,7 +21,10 @@ EDIT_CONTEXT_LINES = 3
 NOT_FOUND_MIN_SIMILARITY = 0.4
 NOT_FOUND_MAX_LINES = 30
 SNAPSHOT_MAX_FILE_BYTES = 1_000_000  # larger files are tracked by size and time only, so they can't be restored
-WRITE_TOOLS = {"edit_file", "write_file"}
+WRITE_TOOLS = {"edit_file", "write_file", "create_directory"}
+# Programs models try to run for things a tool already does.
+TOOL_FOR_PROGRAM = {"mkdir": "create_directory", "ls": "list_files", "find": "list_files", "cat": "read_file",
+                    "head": "read_file", "tail": "read_file", "grep": "search", "rg": "search"}
 SHELL_SYNTAX = {"|", "||", "&&", ";", ">", ">>", "<", "2>&1", "&"}
 LINT_PROBLEM_RE = re.compile(r"^\S+:\d+:\d+: (.*)$")  # "path:line:col: CODE message"
 MAX_REWRITE_LINES = 100
@@ -114,6 +117,7 @@ class Tools:
             "search": self.search,
             "write_file": self.write_file,
             "edit_file": self.edit_file,
+            "create_directory": self.create_directory,
             "review_changes": self.review_changes,
             "lint": self.lint,
             "run_command": self.run_command,
@@ -274,6 +278,25 @@ class Tools:
         result = f"{'Overwrote' if existed else 'Created'} {path} ({len(content.splitlines())} lines)."
         return f"{result}\n{warning}" if warning else result
 
+    def create_directory(self, path: str) -> str:
+        target = self._inside(path)
+        relative = target.relative_to(self.root)
+        if any(part in IGNORED_DIRS for part in relative.parts):
+            raise ToolError(f"creating '{path}' is not allowed")
+        if target.is_dir():
+            return f"{relative} already exists."
+        if target.exists():
+            raise ToolError(f"'{path}' is a file")
+        # A folder may be created where the mode allows writing files inside it.
+        if not self.mode.can_write(f"{relative}/file"):
+            raise ToolError(f"{relative} is read-only in {self.mode.name} mode. {self.mode.describe_writes()}")
+        rejection = self.confirm_write(f"{relative}/", "(new folder)\n")
+        if rejection is not None:
+            raise Rejected(rejection)
+        target.mkdir(parents=True)
+        self.log.record(f"{relative}/", "created")
+        return f"Created the folder {relative}."
+
     def edit_file(self, path: str, old_text: str, new_text: str) -> str:
         target = self._resolve_writable(path)
         if not target.exists():
@@ -358,6 +381,8 @@ class Tools:
             if SHELL_SYNTAX & set(argv):
                 message += (" Commands run without a shell, so |, &&, ; and redirection such as > or 2>&1 don't work:"
                             " run one program at a time, and use the input parameter to send text to a program.")
+            if tool := TOOL_FOR_PROGRAM.get(Path(argv[0]).name):
+                message += f" Use the {tool} tool instead of {Path(argv[0]).name}."
             raise ToolError(message)
         rejection = self.confirm_command(line)
         if rejection is not None:
@@ -651,7 +676,7 @@ SCHEMAS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Create a new file, or completely replace an existing one. Prefer edit_file for changes to existing files.",
+            "description": "Create a new file, or completely replace an existing one. Missing folders in the path are created. Prefer edit_file for changes to existing files.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -659,6 +684,20 @@ SCHEMAS = [
                     "content": {"type": "string", "description": "The full content of the file."},
                 },
                 "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_directory",
+            "description": "Create a folder, and any missing folders above it. Nothing happens if it already exists.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Folder path relative to the workspace root."},
+                },
+                "required": ["path"],
             },
         },
     },
