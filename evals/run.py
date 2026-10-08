@@ -184,13 +184,14 @@ def proved_first(timeline: list[tuple[str, dict, str]]) -> bool:
     return False
 
 
-def run_task(task: Path, parent: Path, model: str | None, num_ctx: int | None) -> Outcome:
+def run_task(task: Path, parent: Path, model: str | None, num_ctx: int | None, max_iterations: int | None) -> Outcome:
     spec = json.loads((task / "task.json").read_text())
     kind = spec.get("kind", "tests")
     workspace = make_workspace(task, parent)
     config = load_config(ROOT / "config.json")
     config.model = model or config.model
     config.num_ctx = num_ctx or config.num_ctx
+    config.max_iterations = max_iterations or config.max_iterations
     config.sessions_dir = parent / "sessions"
     config.commands.extra_read = [*config.commands.extra_read, str(VENV.resolve())]
     session = Session.create(config.sessions_dir, workspace)
@@ -269,6 +270,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Tinker on the evaluation tasks")
     parser.add_argument("--model", help="Ollama model (default: the one in config.json)")
     parser.add_argument("--num-ctx", type=int, help="context window (default: the one in config.json)")
+    parser.add_argument("--max-iterations", type=int, help="most model calls per task (default: the one in config.json)")
     parser.add_argument("--tasks", help="comma-separated task names (default: all)")
     parser.add_argument("--repeat", type=int, default=1, help="run each task this many times")
     parser.add_argument("--check-tasks", action="store_true", help="check the tasks themselves and exit")
@@ -290,7 +292,7 @@ def main() -> None:
         for task in tasks(args.tasks):
             for n in range(args.repeat):
                 print(f"Running {task.name} ({n + 1}/{args.repeat})...", file=sys.stderr, flush=True)
-                outcomes.append(run_task(task, Path(tmp) / f"{task.name}-{n}", args.model, args.num_ctx))
+                outcomes.append(run_task(task, Path(tmp) / f"{task.name}-{n}", args.model, args.num_ctx, args.max_iterations))
                 path.write_text(json.dumps([asdict(o) for o in outcomes], indent=1))  # saved as it goes
         print_table(outcomes)
         print(f"Details: {path.relative_to(ROOT)}")

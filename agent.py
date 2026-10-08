@@ -370,4 +370,5 @@ class Agent:
                 previous_call, previous_content = this_call, content
                 self._add({"role": "tool", "tool_name": name, "content": result})
 
-        return f"[Stopped after {self.config.max_iterations} iterations without a final answer]"
+        calls = "call" if self.config.max_iterations == 1 else "calls"
+        return f"[Stopped after {self.config.max_iterations} model {calls} without a final answer]"

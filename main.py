@@ -138,10 +138,15 @@ def main() -> None:
     parser.add_argument("--resume", metavar="SESSION_ID", help="Continue a previous session")
     parser.add_argument("--sessions", action="store_true", help="List previous sessions and exit")
     parser.add_argument("--mode", help="Starting mode: one of the modes in the config (default: the config's default_mode for new sessions, the saved mode when resuming)")
+    parser.add_argument("--max-iterations", type=int, metavar="N", help="Most model calls for one request (default: max_iterations in the config)")
     parser.add_argument("-p", "--prompt", metavar="MESSAGE", help="Run one request and exit ('-' reads it from stdin). Uses plan mode unless --mode edit is given, which also auto-approves changes.")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.max_iterations is not None:
+        if args.max_iterations < 1:
+            parser.error("--max-iterations must be at least 1")
+        config.max_iterations = args.max_iterations
     options = RunOptions()
 
     if args.sessions:
