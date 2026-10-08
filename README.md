@@ -1,6 +1,6 @@
 # Tinker - A Coding Agent
 
-Tinker is a Python-based coding agent that leverages Ollama for language model capabilities. It's designed to work locally with an existing Ollama installation running on a separate machine in the network.
+Tinker is a Python-based coding agent that leverages Ollama for language model capabilities. It runs a local model through Ollama (default qwen3-coder) and works on one workspace directory.
 
 ## Overview
 
@@ -20,15 +20,20 @@ The agent operates in different modes that control what actions it can perform, 
 - **Interactive Session Management**: Save and resume coding sessions
 - **Change Approval**: Interactive or automatic approval of file changes
 - **Code Linting**: Automatic linting of modified Python files
-- **Error Handling**: Robust error handling for Ollama connection issues
+- **Sandboxed Commands**: Run tests and linters with no network and no access outside the workspace
 
 ## Installation
 
-1. Ensure you have Ollama installed and running on a separate machine in your network
+1. Create and activate a Python virtual environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   ```
 2. Install the required Python dependencies:
    ```bash
    pip install -r requirements.txt
    ```
+3. Linux only (x86_64): commands run in a sandbox that needs Landlock and unprivileged user namespaces.
 
 ## Configuration
 
@@ -45,17 +50,24 @@ The agent uses `config.json` for configuration:
   "sessions_dir": "~/.tinker/sessions",
   "lint_args": ["--select", "F,E9,PLE,W291,W293,Q000"],
   "default_mode": "plan",
+  "commands": {
+    "timeout_seconds": 120,
+    "max_output_chars": 20000,
+    "allow_project_auto_approve": false
+  },
   "modes": {
     "plan": {
       "description": "Explore and plan; no changes",
       "read": ["**"],
-      "write": []
+      "write": [],
+      "run": ["pytest*", "python -m pytest*", "ruff check*"]
     },
     "edit": {
       "description": "Change anything in the workspace",
       "read": ["**"],
       "write": ["**"],
-      "approve": "ask"
+      "approve": "ask",
+      "run": ["pytest*", "python -m pytest*", "ruff check*"]
     },
     "docs": {
       "description": "Read everything; write documentation only",
@@ -68,11 +80,14 @@ The agent uses `config.json` for configuration:
       "read": ["**"],
       "write": ["**"],
       "deny_write": ["tests/**", "**/test_*.py"],
-      "instructions": "The tests define the required behaviour. Make the code pass them; if a test looks wrong, say so instead of working around it."
+      "instructions": "The tests define the required behaviour. Make the code pass them; if a test looks wrong, say so instead of working around it.",
+      "run": ["pytest*", "python -m pytest*", "ruff check*"]
     }
   }
 }
 ```
+
+A project can adjust modes in its own .tinker/config.json (see "Project configuration" below).
 
 ## Usage
 
@@ -86,81 +101,56 @@ python main.py [workspace]
 - `--config`: Path to config file (default: config.json)
 - `--resume SESSION_ID`: Continue a previous session
 - `--sessions`: List previous sessions and exit
-- `--mode MODE`: Starting mode (plan, edit, docs, feature)
-- `-p MESSAGE` or `--prompt MESSAGE`: Run one request and exit
+- `--mode NAME`: Starting mode (plan, edit, docs, feature)
+- `-p MESSAGE` or `--prompt MESSAGE`: Run one request and exit (-p - reads from stdin; answer goes to stdout, progress to stderr)
+
+In a one-shot run without --mode, Tinker uses default_mode; with an explicit --mode, that mode's changes and commands are approved automatically.
 
 ### Modes
 
-1. **plan**: Explore and plan; no changes allowed
+1. **plan**: Explore and plan; no changes allowed (read only; may run tests)
 2. **edit**: Change anything in the workspace (requires approval for changes)
-3. **docs**: Read everything; write documentation only (auto-approve changes)
-4. **feature**: Implement features without changing tests (auto-approve changes, but denies test modifications)
+3. **docs**: Read everything; write documentation only (approved automatically, no commands)
+4. **feature**: Implement features without changing tests (change anything except tests/** and **/test_*.py; may run tests)
 
 ### Interactive Commands
 
 While running interactively, you can use these commands:
-- `/plan`: Switch to plan mode
-- `/edit`: Switch to edit mode  
-- `/docs`: Switch to docs mode
-- `/feature`: Switch to feature mode
-- `/auto_approve`: Toggle auto-approval of file changes (this run only)
+- `/mode`: List the modes
+- `/mode NAME` or `/NAME`: Switch mode
+- `/auto_approve`: Toggle automatic approval of file changes and commands for this run
+- `exit` or `quit`: Leave the session
 
 ## Key Components
 
 ### Core Files
-- `main.py`: Main entry point and interactive interface
-- `agent.py`: Core agent logic with LLM interaction
-- `config.py`: Configuration loading and validation
-- `session.py`: Session management for saving/resuming conversations
-- `tools.py`: Tool implementations for file operations
-- `permissions.py`: Permission system for read/write access control
+- `main.py`: Command line and interactive loop
+- `agent.py`: Talks to the model, runs tools, checks lint and failed commands before accepting an answer
+- `context.py`: Keeps the conversation within the model's context window
+- `tools.py`: The tools the model can use
+- `permissions.py`: Mode path rules, and turning them into sandbox rules
+- `sandbox.py`: Runs commands with Landlock, seccomp and namespaces
+- `config.py`: Loads config.json and a project's .tinker/config.json
+- `session.py`: Saves and resumes sessions
 
-### Tools Available
-The agent can perform various operations:
-- File reading (`read_file`, `list_files`, `search`)
-- File editing (`edit_file`, `write_file`)
-- Code analysis and linting
-- Session management
+### Tools
+- `list_files`, `read_file`, `search`
+- `edit_file`, `write_file` (refuses to overwrite files over 100 lines)
+- `review_changes` (diff of this request's changes)
+- `lint` (ruff)
+- `run_command` (only commands the mode allows)
 
-## Network Requirements
+## Running commands
 
-Tinker requires an Ollama installation running on a separate machine in the network. If you cannot contact Ollama, it's most likely that the other machine has gone to sleep - wake it up before trying again.
+Commands run without a shell, in a sandbox where they can read the workspace, write only what the mode allows, use a private temporary directory, read system directories, and have no network or access to your home directory. Changes a mode doesn't allow are undone afterwards. Extra read access and network access can only be granted in the global config.json (commands.extra_read, commands.network, commands.projects).
 
-## Code Quality Review
+## Project configuration
 
-The Tinker agent demonstrates good software engineering practices with a well-structured codebase that follows Python best practices. Here's an assessment of its code quality:
+A project's .tinker/config.json may add or change modes and set default_mode, for paths inside the project only; automatic approval from a project config needs "allow_project_auto_approve": true in the global config; anything else is ignored with a warning.
 
-### Strengths
+## Development
 
-**Modular Design**: The codebase is well-organized into distinct modules:
-- `main.py` handles the interactive interface and command-line parsing
-- `agent.py` contains the core LLM interaction logic 
-- `config.py` manages configuration loading and validation
-- `session.py` implements session management
-- `tools.py` provides file operation tools with permission control
-- `permissions.py` handles read/write access control
-
-**Clear Separation of Concerns**: Each module has a specific responsibility, making the codebase maintainable and testable.
-
-**Error Handling**: Robust error handling for Ollama connection issues, malformed tool calls, and other potential failures.
-
-**Security Considerations**: The permission system prevents unauthorized file modifications through different modes (plan, edit, docs, feature).
-
-**Documentation**: Comprehensive inline documentation and a detailed README that explains the system's functionality.
-
-### Areas for Improvement
-
-**Code Duplication**: Some error handling patterns are repeated across modules. A centralized error handler could reduce redundancy.
-
-**Testing Coverage**: While the code is well-structured, there's no explicit mention of automated tests in the repository, which would be beneficial for maintaining quality.
-
-**Configuration Management**: The configuration system is good but could benefit from more validation and default value handling.
-
-**Tool Call Parsing**: The XML parsing logic for tool calls (in `agent.py`) is somewhat complex and could potentially be simplified or made more robust.
-
-### Overall Assessment
-
-The codebase demonstrates solid Python development practices with clean separation of concerns, good error handling, and a well-thought-out permission system. The modular approach makes it easy to understand and extend. The agent's design philosophy of requiring explicit approval for file changes is a strong security feature that prevents unintended modifications.
+Run the tests with `.venv/bin/python -m pytest tests`. Tests that start a sandbox skip themselves when run inside Tinker's own sandbox, so run them directly after changing sandbox code.
 
 ## License
 
