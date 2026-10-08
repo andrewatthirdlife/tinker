@@ -11,6 +11,32 @@ class CommandSettings:
     timeout_seconds: int = 120
     max_output_chars: int = 20000
     allow_project_auto_approve: bool = False
+    extra_read: list[str] = field(default_factory=list)  # outside the checkout, readable by commands in every project
+    network: bool = False
+    projects: dict[str, dict] = field(default_factory=dict)  # project path -> {"extra_read": [...], "network": bool}
+
+    def __post_init__(self):
+        for path, grants in self.projects.items():
+            if not isinstance(grants, dict):
+                raise ValueError(f"commands.projects[{path!r}]: settings must be an object")
+            valid_keys = {"extra_read", "network"}
+            if not set(grants.keys()).issubset(valid_keys):
+                raise ValueError(f"commands.projects[{path!r}]: settings may only be extra_read (a list of paths) and network (true or false)")
+            if "extra_read" in grants and not isinstance(grants["extra_read"], list):
+                raise ValueError(f"commands.projects[{path!r}]: extra_read must be a list of paths")
+            if "network" in grants and not isinstance(grants["network"], bool):
+                raise ValueError(f"commands.projects[{path!r}]: network must be true or false")
+
+    def grants_for(self, workspace: Path) -> tuple[list[str], bool]:
+        """Paths outside the checkout that commands may read, and whether they may use the network, in workspace."""
+
+        extra = list(self.extra_read)
+        network = self.network
+        for path, grants in self.projects.items():
+            if Path(path).expanduser().resolve() == workspace.resolve():
+                extra.extend(grants.get("extra_read", []))
+                network = network or grants.get("network", False)
+        return ([str(Path(p).expanduser()) for p in extra], network)
 
 
 PROJECT_CONFIG = Path(".tinker") / "config.json"
