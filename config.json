@@ -47,6 +47,7 @@
       "read": ["**"],
       "write": ["**"],
       "run": ["pytest*", "python -m pytest*", "ruff check*", "go vet*", "go test*", "go run*", "go build*"],
+      "deny_delete": ["tests/**", "**/test_*.py"],
       "instructions": "Prove the bug before fixing it. First write a test that reproduces the problem, and run it to show that it fails. Only then change the code, and run the tests again to show that the new test passes and nothing else broke. Keep the new test: it guards against the bug coming back."
     }
   }

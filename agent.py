@@ -388,7 +388,9 @@ class Agent:
                     think=think,
                 ))
             except ResponseError as e:
-                if e.status_code != 500 or attempt == MAX_CHAT_RETRIES:
+                # Ollama reports a tool call it can't parse as HTTP 500, or with status -1 partway through a stream.
+                unparsed = e.status_code == 500 or "error parsing tool call" in str(e.error)
+                if not unparsed or attempt == MAX_CHAT_RETRIES:
                     raise
                 self.on_notice(f"Ollama error, retrying ({attempt + 1}/{MAX_CHAT_RETRIES}): {e.error}")
                 # The hint is only for the retry; it is not kept in the history.
@@ -414,12 +416,13 @@ class Agent:
         for _ in range(self.config.max_iterations):
             content, tool_calls, extra = self._next_reply(tools, think, temperature)
             think = temperature = None
-            if (content and content == previous_content and len(tool_calls) == 1
+            if (content.strip() and content == previous_content and len(tool_calls) == 1
                     and tool_calls[0]["function"]["name"] not in WRITE_TOOLS
                     and _call_key(tool_calls[0]) == previous_call[:2]):
                 # The model keeps sending the same finished answer with the same read-only check; the check's
                 # result can't have changed, so take the text as the final answer instead of looping. Both must
-                # repeat: some models re-read a file while still working, with new text each time.
+                # repeat: some models re-read a file while still working, with new text each time. Whitespace isn't
+                # an answer: nemotron sends "\n\n" with every tool call.
                 self.on_notice(f"Repeated {tool_calls[0]['function']['name']} call; taking the reply as the final answer")
                 tool_calls = []
             self._add({"role": "assistant", "content": content, "tool_calls": tool_calls, **extra})

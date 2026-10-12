@@ -41,7 +41,7 @@ class CommandSettings:
 
 
 PROJECT_CONFIG = Path(".tinker") / "config.json"
-PATH_KEYS = ("read", "deny_read", "write", "deny_write")
+PATH_KEYS = ("read", "deny_read", "write", "deny_write", "deny_delete")
 
 
 @dataclass

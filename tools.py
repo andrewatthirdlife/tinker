@@ -307,6 +307,8 @@ class Tools:
         if not target.exists():
             raise ToolError(f"'{path}' does not exist")
         relative = str(target.relative_to(self.root))
+        if not self.mode.can_delete(relative):
+            raise ToolError(f"{relative} cannot be deleted in {self.mode.name} mode. {self.mode.describe_writes()}")
         self._check_readable(target)
         old = target.read_text(errors="replace")
         diff = "".join(difflib.unified_diff(old.splitlines(keepends=True), [], f"a/{relative}", "/dev/null"))
@@ -472,7 +474,7 @@ class Tools:
             old, new = before.get(rel), after.get(rel)
             if old == new:
                 continue
-            if self.mode.can_write(rel):
+            if self.mode.can_write(rel) and (new is not None or self.mode.can_delete(rel)):
                 kind = "created" if old is None else "deleted" if new is None else "changed"
                 self.log.record(rel, f"{kind} by a command")
                 if isinstance(old, tuple):

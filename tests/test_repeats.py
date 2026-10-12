@@ -47,3 +47,11 @@ def test_rereading_with_new_text_continues(tmp_path):
     assert notices == []
     results = [m["content"] for m in agent.messages if m["role"] == "tool"]
     assert REPEAT_NOTE not in results[0] and REPEAT_NOTE in results[1]  # the repeat is still pointed out
+
+
+def test_whitespace_is_not_an_answer(tmp_path):
+    # nemotron sends "\n\n" with every tool call; running the tests twice in a row is normal, not a finished answer.
+    script = [reply("\n\n", READ), reply("\n\n", READ), reply("x is 1.")]
+    _, answer, notices = run(tmp_path, script)
+    assert answer == "x is 1."
+    assert notices == []

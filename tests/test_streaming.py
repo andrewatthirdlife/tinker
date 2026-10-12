@@ -59,3 +59,26 @@ def test_a_second_empty_answer_is_reported(tmp_path):
     _, answer, notices = run(tmp_path, ["", ""])
     assert answer == NO_ANSWER
     assert len(notices) == 1
+
+
+def test_tool_call_ollama_cannot_parse_mid_stream_is_retried(tmp_path):
+    from ollama import ResponseError
+
+    def broken_stream():
+        yield chunk(thinking="Let me edit.")
+        raise ResponseError('error parsing tool call: raw=\'{"path":"a.py",\', err=unexpected end of JSON input', -1)
+
+    config = Config(
+        host="h", model="m", num_ctx=65536, temperature=0, max_iterations=10, max_tool_output_chars=20000,
+        sessions_dir=str(tmp_path / "sessions"), lint_args=[], default_mode="plan",
+        modes={"plan": {"description": "d", "write": []}},
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    notices = []
+    agent = Agent(config, Session.create(config.sessions_dir, workspace), lambda n, a: None, notices.append,
+                  lambda p, d: None, lambda c: None)
+    streams = [broken_stream(), iter([chunk("a.py sets x to 1."), chunk(done=True)])]
+    agent.client = type("Client", (), {"chat": lambda self, **kw: streams.pop(0)})()
+    assert agent.ask("what does a.py do?") == "a.py sets x to 1."
+    assert notices[0].startswith("Ollama error, retrying (1/2): error parsing tool call")

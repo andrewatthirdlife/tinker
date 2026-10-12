@@ -85,3 +85,17 @@ def test_file_created_then_deleted(tmp_path):
 
 def test_refused_rm_suggests_delete_file(tmp_path):
     assert "Use the delete_file tool instead of rm." in make_tools(tmp_path).run("run_command", {"command": "rm a.go"})
+
+
+def test_deny_delete_keeps_files_that_can_still_be_written(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_bug.py").write_text("def test_bug(): pass\n")
+    mode = Mode(name="bugfix", description="d", write=["**"], deny_delete=["tests/**", "**/test_*.py"])
+    tools = Tools(tmp_path, 20000, lambda p, d: None, [], mode)
+    result = tools.run("delete_file", {"path": "tests/test_bug.py"})
+    assert result.startswith("Error: tests/test_bug.py cannot be deleted in bugfix mode.")
+    assert "You cannot delete files matching: tests/**, **/test_*.py." in result
+    assert (tmp_path / "tests" / "test_bug.py").exists()
+    assert tools.run("write_file", {"path": "tests/test_bug.py", "content": "def test_bug(): assert 1\n"}).startswith("Overwrote")
+    (tmp_path / "scratch.txt").write_text("x\n")
+    assert tools.run("delete_file", {"path": "scratch.txt"}) == "Deleted scratch.txt."

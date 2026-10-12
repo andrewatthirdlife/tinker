@@ -19,6 +19,7 @@ MODES = {
     "plan": Mode(name="plan", description="d", write=[]),
     "edit": Mode(name="edit", description="d", write=["**"]),
     "feature": Mode(name="feature", description="d", write=["**"], deny_write=["tests/**", "**/test_*.py"]),
+    "bugfix": Mode(name="bugfix", description="d", write=["**"], deny_delete=["tests/**", "**/test_*.py"]),
 }
 
 
@@ -127,3 +128,17 @@ def test_command_environment_uses_workspace_venv(workspace):
                         "print(os.environ['RUFF_NO_CACHE'], os.environ['PYTEST_ADDOPTS'])")
     assert result.stdout.split("\n")[:3] == [str(workspace / ".venv"), str(workspace / ".venv/bin"),
                                              "true -p no:cacheprovider"], result.stderr
+
+
+def test_command_cannot_delete_what_deny_delete_keeps(workspace):
+    tools = make_tools(workspace, "bugfix")
+    result = run(tools, """
+import os
+os.remove("tests/test_calc.py")
+os.remove("src/old.py")
+open("tests/test_calc.py.bak", "w").write("x\\n")
+""")
+    assert result.returncode == 0, result.stderr
+    assert (workspace / "tests/test_calc.py").read_text() == "def test_add():\n    pass\n"
+    assert tools.log.reverted == ["tests/test_calc.py"]
+    assert tools.log.files == {"src/old.py": "deleted by a command", "tests/test_calc.py.bak": "created by a command"}

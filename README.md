@@ -90,6 +90,7 @@ The agent uses `config.json` for configuration:
       "read": ["**"],
       "write": ["**"],
       "run": ["pytest*", "python -m pytest*", "ruff check*", "go vet*", "go test*", "go run*", "go build*"],
+      "deny_delete": ["tests/**", "**/test_*.py"],
       "instructions": "Prove the bug before fixing it. First write a test that reproduces the problem, and run it to show that it fails. Only then change the code, and run the tests again to show that the new test passes and nothing else broke. Keep the new test: it guards against the bug coming back."
     }
   }
@@ -125,7 +126,7 @@ In a one-shot run without --mode, Tinker uses default_mode; with an explicit --m
 2. **edit**: Change anything in the workspace (requires approval for changes)
 3. **docs**: Read everything; write documentation only (approved automatically, no commands)
 4. **feature**: Implement features without changing tests (change anything except tests/** and **/test_*.py; may run tests)
-5. **bugfix**: Fix a bug by first writing a test that reproduces it and showing that it fails, then fixing the code
+5. **bugfix**: Fix a bug by first writing a test that reproduces it and showing that it fails, then fixing the code. Tests can be written but not deleted (`deny_delete`), so the test that proves the bug stays
 
 ### Interactive Commands
 

@@ -44,6 +44,7 @@ class Mode:
     deny_read: list[str] = field(default_factory=list)
     write: list[str] = field(default_factory=list)
     deny_write: list[str] = field(default_factory=list)
+    deny_delete: list[str] = field(default_factory=list)  # writable, but never deleted (e.g. new tests in bugfix mode)
     approve: str = "ask"
     run: list[str] = field(default_factory=list)
     approve_commands: str = "ask"
@@ -57,8 +58,17 @@ class Mode:
         """Check if a path is writable under this mode."""
         return matches(path, self.write) and not matches(path, self.deny_write)
 
+    def can_delete(self, path: str) -> bool:
+        return self.can_write(path) and not matches(path, self.deny_delete)
+
     def describe_writes(self) -> str:
-        """Describe what files this mode may write to."""
+        """Describe what files this mode may write to, and any it may not delete."""
+        text = self._describe_writes()
+        if self.write and self.deny_delete:
+            text += " You cannot delete files matching: " + ", ".join(self.deny_delete) + "."
+        return text
+
+    def _describe_writes(self) -> str:
         if not self.write:
             return "You cannot create or edit any files."
 
