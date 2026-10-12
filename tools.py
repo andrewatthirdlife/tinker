@@ -21,9 +21,9 @@ EDIT_CONTEXT_LINES = 3
 NOT_FOUND_MIN_SIMILARITY = 0.4
 NOT_FOUND_MAX_LINES = 30
 SNAPSHOT_MAX_FILE_BYTES = 1_000_000  # larger files are tracked by size and time only, so they can't be restored
-WRITE_TOOLS = {"edit_file", "write_file", "create_directory"}
+WRITE_TOOLS = {"edit_file", "write_file", "create_directory", "delete_file"}
 # Programs models try to run for things a tool already does.
-TOOL_FOR_PROGRAM = {"mkdir": "create_directory", "ls": "list_files", "find": "list_files", "cat": "read_file",
+TOOL_FOR_PROGRAM = {"mkdir": "create_directory", "rm": "delete_file", "ls": "list_files", "find": "list_files", "cat": "read_file",
                     "head": "read_file", "tail": "read_file", "grep": "search", "rg": "search"}
 SHELL_SYNTAX = {"|", "||", "&&", ";", ">", ">>", "<", "2>&1", "&"}
 LINT_PROBLEM_RE = re.compile(r"^\S+:\d+:\d+: (.*)$")  # "path:line:col: CODE message"
@@ -63,10 +63,14 @@ class ChangeLog:
     commands: list[str] = field(default_factory=list)  # commands run during this request, with their result
     checks_failing: list[str] = field(default_factory=list)  # project checks still failing at the end
     last_failed_command: str | None = None  # the last command run, if it failed
+    changes: int = 0  # how many changes have been made, by tools or commands
 
     def record(self, path: str, kind: str) -> None:
+        self.changes += 1
         # Keep the most significant change: a new file stays "created"; an edited file can become "rewritten".
-        if self.files.get(path) in (None, "edited"):
+        if kind == "deleted":
+            self.files[path] = "created, then deleted" if self.files.get(path) == "created" else "deleted"
+        elif self.files.get(path) in (None, "edited", "deleted", "created, then deleted"):
             self.files[path] = kind
 
     def summary(self) -> str | None:
@@ -118,6 +122,7 @@ class Tools:
             "write_file": self.write_file,
             "edit_file": self.edit_file,
             "create_directory": self.create_directory,
+            "delete_file": self.delete_file,
             "review_changes": self.review_changes,
             "lint": self.lint,
             "run_command": self.run_command,
@@ -296,6 +301,22 @@ class Tools:
         target.mkdir(parents=True)
         self.log.record(f"{relative}/", "created")
         return f"Created the folder {relative}."
+
+    def delete_file(self, path: str) -> str:
+        target = self._resolve_writable(path)
+        if not target.exists():
+            raise ToolError(f"'{path}' does not exist")
+        relative = str(target.relative_to(self.root))
+        self._check_readable(target)
+        old = target.read_text(errors="replace")
+        diff = "".join(difflib.unified_diff(old.splitlines(keepends=True), [], f"a/{relative}", "/dev/null"))
+        rejection = self.confirm_write(relative, diff or "(delete empty file)\n")
+        if rejection is not None:
+            raise Rejected(rejection)
+        self.log.originals.setdefault(relative, old)
+        target.unlink()
+        self.log.record(relative, "deleted")
+        return f"Deleted {relative}."
 
     def edit_file(self, path: str, old_text: str, new_text: str) -> str:
         target = self._resolve_writable(path)
@@ -696,6 +717,20 @@ SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Folder path relative to the workspace root."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_file",
+            "description": "Delete a file. To delete a folder, delete the files in it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to the workspace root."},
                 },
                 "required": ["path"],
             },

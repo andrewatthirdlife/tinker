@@ -103,12 +103,16 @@ CUT_OFF_REMINDER = (
     "what is wrong, find out by running something or reading the code; otherwise make a small edit_file change.]"
 )
 NO_ANSWER = "[The model stopped without giving an answer]"
-MAX_REPEATS = 3  # after the same call gives the same result this many times in a row, it is not run again
-STOP_AFTER_REPEATS = 6  # ... and a call repeated this many times ends the request
+# Put before a final answer while checks fail: models often claim success regardless.
+CHECKS_FAILING_WARNING = "[Tinker: the project's checks still fail: {checks}. Don't trust claims below that the work is done.]"
+# Repeats are counted since the last change to any file, so a model going round in a circle of calls is caught as
+# well as one making the same call in a row; after an edit, running the same build again is fine.
+MAX_REPEATS = 3  # after the same call gives the same result this many times, it is not run again
+STOP_AFTER_REPEATS = 6  # ... and a call made this many times ends the request
 NOT_RUN_AGAIN = (
-    "Error: not run. You have made this exact call {count} times in a row and got the same result each time, so "
-    "it would only give that result again. Do something different: act on what the result showed, look at "
-    "other code or files, or use another tool."
+    "Error: not run. You have made this exact call {count} times since anything last changed, and got the same "
+    "result each time, so it would only give that result again. Do something different: act on what the result "
+    "showed, change the code, or use another tool."
 )
 FAILED_COMMAND_REMINDER = (
     "[Note from the agent, not the user. The last command you ran failed: {command}. "
@@ -116,8 +120,8 @@ FAILED_COMMAND_REMINDER = (
 )
 
 REPEAT_NOTE = (
-    "\n[Note from the agent: this call and its result are the same as your previous call, so nothing has "
-    "changed. Do not repeat it. Continue with the task, or give your final answer without calling any tools.]"
+    "\n[Note from the agent: you already made this call and got this result, and nothing has changed since. "
+    "Do not repeat it. Continue with the task, or give your final answer without calling any tools.]"
 )
 CALL_FORMAT = (
     "Give every required parameter inside the <function=...> block, for example "
@@ -183,6 +187,11 @@ def _for_model(messages: list[dict]) -> list[dict]:
 
 def _command_passed(result: str) -> bool:
     return bool(re.search(r"^exit code 0,", result, re.M))
+
+
+def _comparable(result: str) -> str:
+    """A tool result without the time a command took, which differs between otherwise identical runs."""
+    return re.sub(r"(?m)^(exit code -?\d+|timed out after \d+s), \d+\.\d+s$", r"\1", result)
 
 
 def _short_args(args: dict) -> str:
@@ -398,8 +407,8 @@ class Agent:
         empty_answer_rounds = 0
         cut_off_rounds = 0
         think = temperature = None
-        previous_reply = None  # the index of the reply that made the previous call
-        streak = 0  # how many times in a row the previous call was made with the same result
+        # Calls since the last change: call -> (times made with the same result, that result, the reply that made it).
+        seen, changes = {}, self.tools.log.changes
 
         previous_call, previous_content = (None, None, None), None
         for _ in range(self.config.max_iterations):
@@ -452,21 +461,28 @@ class Agent:
                     self.on_notice(f"The last command failed ({self.tools.log.last_failed_command}); asking the model to deal with it")
                     self._add({"role": "user", "content": FAILED_COMMAND_REMINDER.format(command=self.tools.log.last_failed_command)})
                     continue
-                return content if content.strip() else NO_ANSWER
+                answer = content if content.strip() else NO_ANSWER
+                if self.tools.log.checks_failing:
+                    checks = ", ".join(self.tools.log.checks_failing)
+                    answer = f"{CHECKS_FAILING_WARNING.format(checks=checks)}\n\n{answer}"
+                return answer
 
             cut_off_rounds = 0
             for call in tool_calls:
                 name, args = call["function"]["name"], call["function"]["arguments"] or {}
                 self.on_tool_call(name, args)
-                # The same call with the same result again and again: the model is stuck. Stop running the call,
-                # and in the end stop the request.
-                same_call = _call_key(call) == previous_call[:2]
-                if same_call and streak >= STOP_AFTER_REPEATS:
-                    self.on_notice(f"The model made the same {name} call {streak + 1} times in a row; stopping")
+                # The same call with the same result again and again, with nothing changing: the model is stuck.
+                # Stop running the call, and in the end stop the request.
+                if self.tools.log.changes != changes:
+                    seen, changes = {}, self.tools.log.changes
+                key = _call_key(call)
+                count, earlier_result, earlier_reply = seen.get(key, (0, None, None))
+                if count >= STOP_AFTER_REPEATS:
+                    self.on_notice(f"The model made the same {name} call {count + 1} times with nothing changing; stopping")
                     return f"[Stopped: the model kept repeating the same call, {name}({_short_args(args)})]"
-                if same_call and streak >= MAX_REPEATS:
-                    streak += 1
-                    self._add({"role": "tool", "tool_name": name, "content": NOT_RUN_AGAIN.format(count=streak - 1)})
+                if count >= MAX_REPEATS:
+                    seen[key] = (count + 1, earlier_result, earlier_reply)
+                    self._add({"role": "tool", "tool_name": name, "content": NOT_RUN_AGAIN.format(count=count)})
                     continue
                 if name not in tool_names:
                     result = f"Error: {name} is not available in {self.mode} mode."
@@ -474,17 +490,18 @@ class Agent:
                     result = f"Error: {problems[0]}. {CALL_FORMAT}"
                 else:
                     result = self.tools.run(name, args)
-                this_call = (*_call_key(call), result)
-                streak = streak + 1 if this_call == previous_call else 1
-                if this_call == previous_call:
+                this_call = (*key, result)
+                if count and _comparable(result) == earlier_result:
+                    seen[key] = (count + 1, earlier_result, reply)
                     result += REPEAT_NOTE
                     # Don't show the model the thinking that led it here twice, and make its next reply less
                     # predictable: at a low temperature a stuck model gives the same reply again.
-                    for i in (previous_reply, reply):
+                    for i in (earlier_reply, reply):
                         if i is not None and self.messages[i]["role"] == "assistant":
                             self.messages[i]["repeated"] = True
                     temperature = max(self.config.temperature, RETRY_TEMPERATURE)
-                previous_reply = reply
+                else:
+                    seen[key] = (1, _comparable(result), reply)
                 previous_call, previous_content = this_call, content
                 self._add({"role": "tool", "tool_name": name, "content": result})
 

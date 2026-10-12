@@ -21,6 +21,21 @@ MISSING = ("read_file", {"path": "missing.py"})
 PRESENT = ("read_file", {"path": "a.py"})
 
 
+def run_agent(tmp_path, replies, fake_run):
+    config = Config(
+        host="h", model="m", num_ctx=65536, temperature=0, max_iterations=30, max_tool_output_chars=20000,
+        sessions_dir=str(tmp_path / "sessions"), lint_args=[], default_mode="edit",
+        modes={"edit": {"description": "d", "write": ["**"], "run": ["go*"]}},
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    agent = Agent(config, Session.create(config.sessions_dir, workspace), lambda n, a: None, lambda n: None,
+                  lambda p, d: None, lambda c: None)
+    agent.client = type("Client", (), {"chat": lambda self, **kw: replies.pop(0)})()
+    agent.tools.run = lambda name, args: fake_run(agent, name, args)
+    return agent, agent.ask("build it")
+
+
 def run(tmp_path, replies, tool_results=None):
     config = Config(
         host="h", model="m", num_ctx=65536, temperature=0, max_iterations=30, max_tool_output_chars=20000,
@@ -47,15 +62,42 @@ def test_repeated_failing_call_is_not_run_and_then_stops(tmp_path):
     assert len(results) == STOP_AFTER_REPEATS
     assert all("does not exist" in r for r in results[:MAX_REPEATS])
     assert all(r.startswith("Error: not run.") for r in results[MAX_REPEATS:])
-    assert notices[-1] == f"The model made the same read_file call {STOP_AFTER_REPEATS + 1} times in a row; stopping"
+    assert notices[-1] == f"The model made the same read_file call {STOP_AFTER_REPEATS + 1} times with nothing changing; stopping"
 
 
-def test_a_different_call_starts_the_count_again(tmp_path):
-    replies = ([reply(call=MISSING)] * MAX_REPEATS + [reply(call=PRESENT)]
-               + [reply(call=MISSING)] * MAX_REPEATS + [reply("It doesn't exist.")])
+def test_going_round_in_a_circle_is_caught(tmp_path):
+    # In a stage5 run the model alternated between a build and a run of the result, with nothing changing.
+    replies = [reply(call=MISSING), reply(call=PRESENT)] * MAX_REPEATS + [reply(call=MISSING), reply("Stuck.")]
     answer, results, _ = run(tmp_path, replies)
-    assert answer == "It doesn't exist."
-    assert not any(r.startswith("Error: not run.") for r in results)
+    assert answer == "Stuck."
+    assert results[-1].startswith(f"Error: not run. You have made this exact call {MAX_REPEATS} times")
+    assert sum(r.startswith("Error: not run.") for r in results) == 1
+
+
+def test_a_change_starts_the_count_again(tmp_path):
+    results_given = []
+
+    def fake_run(agent, name, args):
+        if name == "edit_file":
+            agent.tools.log.changes += 1
+            return "Edited a.py."
+        results_given.append(name)
+        return "$ go build .\nexit code 1, 7.5s"
+    build = reply(call=("run_command", {"command": "go build ."}))
+    edit = reply(call=("edit_file", {"path": "a.py", "old_text": "x", "new_text": "y"}))
+    replies = ([build] * MAX_REPEATS + [edit]) * 2 + [reply("Done.")]
+    agent, answer = run_agent(tmp_path, replies, fake_run)
+    assert answer == "Done."
+    assert results_given == ["run_command"] * (2 * MAX_REPEATS)   # every build ran
+
+
+def test_command_timings_do_not_hide_a_repeat(tmp_path):
+    outputs = iter(["$ go vet\nexit code 1, 7.5s", "$ go vet\nexit code 1, 7.7s", "$ go vet\nexit code 1, 7.6s"])
+    vet = reply(call=("run_command", {"command": "go vet"}))
+    agent, answer = run_agent(tmp_path, [vet] * (MAX_REPEATS + 1) + [reply("Stuck.")],
+                              lambda agent, name, args: next(outputs))
+    tool_results = [m["content"] for m in agent.messages if m["role"] == "tool"]
+    assert tool_results[-1].startswith("Error: not run.")
 
 
 def test_repeated_successful_calls_stop_too(tmp_path):

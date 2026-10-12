@@ -61,7 +61,8 @@ def test_failing_check_sends_the_work_back(tmp_path):
 def test_check_that_never_passes_is_reported(tmp_path):
     agent, _, notices, _ = make_agent(tmp_path, [CHECK])
     script(agent, [write("broken")] + [reply("Done!")] * (MAX_CHECK_ROUNDS + 2))
-    assert agent.ask("make the status ok") == "Done!"
+    answer = agent.ask("make the status ok")
+    assert answer.startswith("[Tinker: the project's checks still fail: python3 -c") and answer.endswith("\n\nDone!")
     assert notices.count("1 check(s) failed; asking the model to fix them") == MAX_CHECK_ROUNDS
     assert agent.tools.log.checks_failing == [CHECK]
     assert "checks still failing" in agent.change_summary()

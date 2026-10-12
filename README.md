@@ -150,14 +150,14 @@ The prompt has line editing and history (arrow keys, saved between runs). While 
 ### Tools
 - `list_files`, `read_file`, `search`
 - `edit_file`, `write_file` (creates missing folders; refuses to rewrite files over 100 lines in full, unless they were created during the same request)
-- `create_directory`
+- `create_directory`, `delete_file`
 - `review_changes` (diff of this request's changes)
 - `lint` (ruff)
 - `run_command` (only commands the mode allows; text can be sent to the program's standard input)
 
 ## Running commands
 
-Commands run without a shell, in a sandbox where they can read the workspace, write only what the mode allows, use a private temporary directory, read system directories, and have no network or access to your home directory. Changes a mode doesn't allow are undone afterwards. Extra read access and network access can only be granted in the global config.json: commands.extra_read and commands.network for every project, or commands.projects for one project, for example `"projects": {"~/code/myapp": {"network": true}}`. When a refused command has a matching tool (mkdir, ls, cat, grep...), the refusal names it.
+Commands run without a shell, in a sandbox where they can read the workspace, write only what the mode allows, use a private temporary directory, read system directories, and have no network or access to your home directory. Changes a mode doesn't allow are undone afterwards. Extra read access and network access can only be granted in the global config.json: commands.extra_read and commands.network for every project, or commands.projects for one project, for example `"projects": {"~/code/myapp": {"network": true}}`. When a refused command has a matching tool (mkdir, rm, ls, cat, grep...), the refusal names it.
 
 ## How Tinker checks the model's work
 
@@ -168,7 +168,7 @@ Before accepting a final answer, Tinker sends the work back to the model when:
 - the answer is empty, or the reply was cut off at the length limit. A thinking model that was cut off while
   thinking gets its next reply with thinking turned off, so that it acts instead of going round in circles.
 
-When the model repeats a call and gets the same result, its next reply is made at a higher temperature, and the thinking behind the repeated calls isn't sent back (a stuck model copies its own thinking word for word). If it makes the same call 3 times in a row with the same result, the call isn't run again and the model is told to do something different; after 6 times the request stops. If the model ends with no answer at all, Tinker says so instead of printing nothing.
+When the model repeats a call and gets the same result, its next reply is made at a higher temperature, and the thinking behind the repeated calls isn't sent back (a stuck model copies its own thinking word for word). If it makes the same call 3 times with the same result and no file has changed in between (in a row, or going round in a circle such as build, run, build, run), the call isn't run again and the model is told to do something different; after 6 times the request stops. The time a command took doesn't count as a different result. If the model ends with no answer at all, Tinker says so instead of printing nothing.
 
 With thinking models, the model's thinking is kept and sent back within a request, so it keeps its plan between tool calls; it is dropped for earlier requests. Each reply's thinking, why it stopped and its length are saved in the session.
 
@@ -178,7 +178,7 @@ A project's .tinker/config.json may add or change modes and set default_mode, fo
 
 A setting in a project's mode replaces the global mode's setting of the same name (the example below replaces edit mode's run list).
 
-It may also list checks: commands that run whenever the model gives a final answer after changing files. Failures go back to the model with their output, up to 3 times, and checks still failing are listed in the change report. Checks run like any other command, so the mode must allow them.
+It may also list checks: commands that run whenever the model gives a final answer after changing files. Failures go back to the model with their output, up to 3 times. Checks still failing at the end are listed in the change report, and a warning goes above the final answer, since models often claim success regardless. Checks run like any other command, so the mode must allow them.
 
 ```json
 {

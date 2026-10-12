@@ -1,4 +1,4 @@
-"""create_directory makes folders the mode allows writing in, and refused commands point to the matching tool."""
+"""create_directory and delete_file follow the file-writing rules; refused commands point to the matching tool."""
 
 import sys
 from pathlib import Path
@@ -53,3 +53,35 @@ def test_plan_mode_has_no_create_directory(tmp_path):
 def test_refused_mkdir_suggests_the_tool(tmp_path):
     result = make_tools(tmp_path).run("run_command", {"command": "mkdir demo"})
     assert "Use the create_directory tool instead of mkdir." in result
+
+
+def test_delete_file(tmp_path):
+    (tmp_path / "old.go").write_text("package main\n")
+    asked = []
+    tools = make_tools(tmp_path, confirm=lambda path, diff: asked.append((path, diff)))
+    assert tools.run("delete_file", {"path": "old.go"}) == "Deleted old.go."
+    assert not (tmp_path / "old.go").exists()
+    assert asked[0][0] == "old.go" and "-package main" in asked[0][1]
+    assert tools.log.files == {"old.go": "deleted"} and tools.log.originals == {"old.go": "package main\n"}
+    assert "-package main" in tools.run("review_changes", {})
+
+
+def test_delete_file_refusals(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "keep.txt").write_text("x\n")
+    tools = make_tools(tmp_path, write=["docs/**"])
+    assert "does not exist" in make_tools(tmp_path).run("delete_file", {"path": "nope.txt"})
+    assert "is a directory" in make_tools(tmp_path).run("delete_file", {"path": "src"})
+    assert "read-only in edit mode" in tools.run("delete_file", {"path": "keep.txt"})
+    assert (tmp_path / "keep.txt").exists()
+
+
+def test_file_created_then_deleted(tmp_path):
+    tools = make_tools(tmp_path)
+    tools.run("write_file", {"path": "tmp.txt", "content": "x\n"})
+    tools.run("delete_file", {"path": "tmp.txt"})
+    assert tools.log.files == {"tmp.txt": "created, then deleted"}
+
+
+def test_refused_rm_suggests_delete_file(tmp_path):
+    assert "Use the delete_file tool instead of rm." in make_tools(tmp_path).run("run_command", {"command": "rm a.go"})

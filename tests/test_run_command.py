@@ -47,7 +47,8 @@ def test_runs_an_allowed_command(workspace):
 def test_refuses_commands_the_mode_does_not_allow(workspace):
     tools, asked = make_tools(workspace)
     out = tools.run("run_command", {"command": "rm -rf ."})
-    assert out == "Error: 'rm -rf .' is not one of the commands test mode allows. You can run commands matching: python3 -c*."
+    assert out == ("Error: 'rm -rf .' is not one of the commands test mode allows. You can run commands matching: python3 -c*."
+                   " Use the delete_file tool instead of rm.")
     assert asked == []
     assert (workspace / "calc.py").exists()
 
