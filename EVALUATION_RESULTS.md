@@ -1,41 +1,67 @@
 # Evaluation results
 
-How five local models do as the model behind Tinker, measured with the evaluation set in [`evals/`](evals/).
-Each model ran all 13 tasks twice, with everything else identical within each run.
+How six local models do as the model behind Tinker, measured with the evaluation set in [`evals/`](evals/). Each
+model ran all 13 tasks twice, with everything else identical. These are the final results of the project: the
+experiment ends here.
 
-- **Date:** 8 October 2026
-- **Run 1:** Tinker commit `79dd97e`. **Run 2:** commit `fd9b81f`, which streams replies (so a slow reply is no
-  longer cut off) and asks again after an empty final answer; see [What the fixes changed](#what-the-fixes-changed).
-- **Ollama:** 0.35.1, on a separate machine with an estimated 16 GB of GPU memory (models larger than that run
-  partly on the CPU), every model at its default `q4_K_M` quantization
-- **Settings:** `config.json` as committed: 64K context window, temperature 0.2, at most 40 model calls per task
+## Environment
+
+| | 12 October 2026 (these results) | 8 October 2026 (previous results) |
+|---|---|---|
+| Tinker | commit `11140b1` (`a253927` plus the three fixes in [Before the fixes](#before-the-fixes)) | `79dd97e` (run 1) and `fd9b81f` (run 2) |
+| Ollama server | **0.40.3** (updated automatically between the two dates) | 0.35.1 |
+| ollama-python | 0.6.3 | 0.6.3 |
+| Python | 3.12.3 | 3.12.3 |
+| ruff / pytest | 0.16.10 / 9.1.1 | 0.16.10 / 9.1.1 |
+| Sandbox kernel | 6.6.87.2-microsoft-standard-WSL2 (Landlock ABI 3) | the same |
+| Hardware | Ollama on a separate machine with an estimated 16 GB of GPU memory; models larger than that run partly on the CPU | the same |
+| Settings | `config.json` as committed: 64K context window, temperature 0.2, at most 40 model calls per task, 120 s per command | the same |
+
+The Python packages were installed on 7 October and haven't changed since, so both sets of results used the same
+versions.
+
+**Models**, identified by digest, since a tag such as `:latest` can change:
+
+| Model | Maker | Parameters | Quantization | Size | Digest | Downloaded |
+|---|---|---|---|---|---|---|
+| `laguna-xs-2.1:latest` | Poolside | 33B, 3B active per token | Q4_K_M | 20.3 GB | `0175be1e57f4` | 8 Oct |
+| `ornith:latest` (**Tinker's default**) | — | 9B | Q4_K_M | 5.6 GB | `a75697c14589` | 8 Oct |
+| `glm-4.7-flash:latest` | Z.ai | 30B | Q4_K_M | 19.0 GB | `4475827791a2` | 6 Oct |
+| `gpt-oss:20b` (**new**) | OpenAI | 21B, about 3.6B active per token | MXFP4 | 13.8 GB | `f38aa0c53da5` | 12 Oct |
+| `qwen3-coder:latest` | Alibaba | 30B, 3B active per token | Q4_K_M | 18.6 GB | `06c1097efce0` | 30 Sep |
+| `nemotron-3.5-lightning:latest` | NVIDIA | 33B, 3B active per token | Q4_K_M | 25.4 GB | `e7a64ff15fb1` | 8 Oct |
+
+All are thinking models except `qwen3-coder`. The five models from 8 October are the same files, downloaded on or
+before that date, so **between the two sets of results only Ollama and Tinker changed**. `gpt-oss:20b` was added to
+see how general Tinker is: it comes from a different maker and uses a different chat format ("harmony") from the
+other five.
 
 ## Summary
 
-| Model | Run 2 | Run 1 | Both runs | Failing-test tasks | Bug-fix tasks | Run 2 time | Median model calls (run 2) |
-|---|---|---|---|---|---|---|---|
-| `laguna-xs-2.1` | 12/13 | 13/13 | **25/26** | 16/16 | 9/10 | 4.4 min | 9 |
-| `ornith` | 11/13 | 13/13 | **24/26** | 15/16 | 9/10 | 6.1 min | 8 |
-| `glm-4.7-flash` | 12/13 | 10/13 | **22/26** | 14/16 | 8/10 | 16.0 min | 8 |
-| `qwen3-coder` | 11/13 | 11/13 | **22/26** | 14/16 | 8/10 | 15.8 min | 17 |
-| `nemotron-3.5-lightning` | 10/13 | 11/13 | **21/26** | 16/16 | 5/10 | 13.2 min | 11 |
+| Model | Run 1 | Run 2 | **Total** | 8 Oct total | Failing-test tasks | Bug-fix tasks | Time per run | Median model calls |
+|---|---|---|---|---|---|---|---|---|
+| `laguna-xs-2.1` | 13/13 | 13/13 | **26/26** | 25/26 | 16/16 | 10/10 | 7.4, 6.1 min | 12, 12 |
+| `ornith` | 12/13 | 12/13 | **24/26** | 24/26 | 16/16 | 8/10 | 3.7, 3.2 min | 9, 8 |
+| `glm-4.7-flash` | 12/13 | 11/13 | **23/26** | 22/26 | 15/16 | 8/10 | 7.6, 7.0 min | 8, 7 |
+| `gpt-oss:20b` | 11/13 | 12/13 | **23/26** | — | 13/16 | 10/10 | 4.1, 3.5 min | 12, 10 |
+| `qwen3-coder` | 11/13 | 11/13 | **22/26** | 22/26 | 16/16 | 6/10 | 13.7, 9.8 min | 12, 10 |
+| `nemotron-3.5-lightning` | 9/13 | 12/13 | **21/26** | 21/26 | 16/16 | 5/10 | 20.4, 16.9 min | 13, 10 |
 
-| Model | Parameters | Download | Notes |
-|---|---|---|---|
-| `laguna-xs-2.1` (Poolside) | 33B, 3B active per token | 20.3 GB | built for agentic coding; a thinking model |
-| `ornith` (`ornith:latest`, the 9B version) | 9B | 5.6 GB | built for agentic coding; a thinking model; fits on the GPU entirely; **Tinker's default** |
-| `glm-4.7-flash` (Z.ai) | 30B | 19.0 GB | a thinking model |
-| `qwen3-coder` (Alibaba) | 30B, 3B active per token | 18.6 GB | Tinker's default before these results |
-| `nemotron-3.5-lightning` (NVIDIA) | 33B, 3B active per token | 25.4 GB | built for agents; a thinking model |
+**In short:**
 
-**In short:** over two runs, `laguna-xs-2.1` (25/26) and `ornith` (24/26) were the most reliable and by far the
-fastest. `ornith` is Tinker's default because it is nearly as good, and as a 9B model it leaves the most room for
-other work on the machine; `laguna-xs-2.1` is the choice if every task counts. `glm-4.7-flash` and `qwen3-coder`
-tied at 22/26 but were two to four times slower. `nemotron-3.5-lightning` solved every failing-test task, but
-only half the bug-fix tasks.
-
-**Scores move between runs.** `ornith` went from 13 to 11 and `glm-4.7-flash` from 10 to 12. One run per task
-can't separate models whose totals are a point or two apart; see [Caveats](#caveats).
+- **`laguna-xs-2.1` is the most reliable model**, and the only one to solve every task in every run, including
+  `bug_duration`, the task that catches a careless fix.
+- **`ornith` remains a good default:** 24/26, the fastest model tested, and at 9B it fits entirely in the GPU's
+  memory.
+- **`gpt-oss:20b` worked with Tinker without any changes**, scored 23/26, and was nearly as fast as `ornith`. It was
+  the only model besides `laguna` to solve every bug-fix task, but it lost three failing-test tasks.
+- **The scores of the five original models are within a point of 8 October.** Tinker gained a lot of features in
+  between (see [What changed since 8 October](#what-changed-since-8-october)), but on these small tasks they
+  neither helped nor hurt much once three bugs were fixed. The same tasks defeat the same models, for the same
+  reasons.
+- **`glm-4.7-flash`, `ornith` and `qwen3-coder` are now much faster** than on 8 October: about 7 minutes per run
+  rather than 16 for `glm`. Ollama is the only other thing that changed, but these results can't prove the update
+  is the reason.
 
 ## The tasks
 
@@ -44,8 +70,8 @@ There are two kinds of task, all small Python projects:
 - **Failing-test tasks (8):** the project has failing tests, and Tinker must make them pass without changing them.
   They run in `feature` mode, which can't write to test files.
 - **Bug-fix tasks (5):** the project's tests all pass, and the bug is only described in the request, like a bug
-  report. They run in the `bugfix` mode, whose instructions say to prove the bug with a failing test before
-  changing any code.
+  report. They run in `bugfix` mode, whose instructions say to prove the bug with a failing test before changing
+  any code, and which can't delete test files.
 
 Every task also has **hidden tests**, added only for grading, so a fix that only special-cases the visible tests
 fails. Grading runs all the tests in the sandbox, because the code under test was written by the model. The final
@@ -63,123 +89,180 @@ to the code. This is reported, but doesn't count towards passing.
 
 ## Results by task, both runs
 
-How many of the two runs passed each task.
+| Task | `laguna-xs-2.1` | `ornith` | `glm-4.7-flash` | `gpt-oss:20b` | `qwen3-coder` | `nemotron-3.5-lightning` | Passed |
+|---|---|---|---|---|---|---|---|
+| `add_function` | 2/2 | 2/2 | 2/2 | **1/2** | 2/2 | 2/2 | 11/12 |
+| `deep_merge` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 12/12 |
+| `fizzbuzz` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 12/12 |
+| `keep_compatible` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 12/12 |
+| `off_by_one` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 12/12 |
+| `rename` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 12/12 |
+| `slugify` | 2/2 | 2/2 | **1/2** | **0/2** | 2/2 | 2/2 | 9/12 |
+| `stack_error` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 12/12 |
+| `bug_cart_total` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | **1/2** | 11/12 |
+| `bug_date_range` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 12/12 |
+| `bug_duration` | 2/2 | **0/2** | **0/2** | 2/2 | **0/2** | **0/2** | 4/12 |
+| `bug_median` | 2/2 | 2/2 | 2/2 | 2/2 | **0/2** | **1/2** | 9/12 |
+| `bug_word_case` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | **1/2** | 11/12 |
 
-| Task | `laguna-xs-2.1` | `ornith` | `glm-4.7-flash` | `qwen3-coder` | `nemotron-3.5-lightning` | Passed |
-|---|---|---|---|---|---|---|
-| `add_function` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 10/10 |
-| `deep_merge` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 10/10 |
-| `fizzbuzz` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 10/10 |
-| `keep_compatible` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 10/10 |
-| `off_by_one` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 10/10 |
-| `rename` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 10/10 |
-| `slugify` | 2/2 | **1/2** | **1/2** | **0/2** | 2/2 | 6/10 |
-| `stack_error` | 2/2 | 2/2 | **1/2** | 2/2 | 2/2 | 9/10 |
-| `bug_cart_total` | 2/2 | 2/2 | 2/2 | 2/2 | **1/2** | 9/10 |
-| `bug_date_range` | 2/2 | 2/2 | 2/2 | 2/2 | **1/2** | 9/10 |
-| `bug_duration` | **1/2** | **1/2** | **0/2** | **1/2** | **0/2** | 3/10 |
-| `bug_median` | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 10/10 |
-| `bug_word_case` | 2/2 | 2/2 | 2/2 | **1/2** | **1/2** | 8/10 |
+Seven tasks were solved by every model in every run. `bug_duration` is by far the hardest (4/12), followed by
+`slugify` and `bug_median` (9/12).
 
-Seven tasks were solved by every model in every run, so they no longer tell models apart. The useful ones are
-`slugify`, `bug_duration`, and to a lesser extent `bug_word_case`.
-
-## Run 2 in detail
+## Each run in detail
 
 Each cell gives the result, the number of model calls and the time taken.
 
-| Task | `laguna-xs-2.1` | `ornith` | `glm-4.7-flash` | `qwen3-coder` | `nemotron-3.5-lightning` |
-|---|---|---|---|---|---|
-| `add_function` | pass (7, 27s) | pass (5, 6s) | pass (7, 40s) | pass (6, 36s) | pass (7, 48s) |
-| `deep_merge` | pass (7, 14s) | pass (5, 13s) | pass (6, 24s) | pass (7, 20s) | pass (5, 18s) |
-| `fizzbuzz` | pass (6, 14s) | pass (5, 7s) | pass (5, 21s) | pass (9, 29s) | pass (7, 31s) |
-| `keep_compatible` | pass (7, 13s) | pass (5, 6s) | pass (6, 23s) | pass (11, 30s) | pass (7, 26s) |
-| `off_by_one` | pass (6, 12s) | pass (5, 8s) | pass (6, 27s) | pass (7, 21s) | pass (5, 20s) |
-| `rename` | pass (9, 14s) | pass (9, 14s) | pass (11, 32s) | pass (17, 54s) | pass (11, 30s) |
-| `slugify` | pass (18, 33s) | **FAIL** (7, 20s) | pass (14, 59s) | **FAIL** (24, 104s) | pass (15, 58s) |
-| `stack_error` | pass (8, 17s) | pass (10, 17s) | pass (8, 24s) | pass (9, 25s) | pass (10, 27s) |
-| `bug_cart_total` | pass (10, 23s) | pass (8, 14s) | pass (10, 42s) | pass (17, 68s) | **FAIL** (29, 96s) |
-| `bug_date_range` | pass (10, 23s) | pass (9, 17s) | pass (8, 36s) | pass (40, 254s) | **FAIL** (40, 146s) |
-| `bug_duration` | **FAIL** (14, 34s) | **FAIL** (15, 68s) | **FAIL** (18, 560s) | pass (30, 135s) | **FAIL** (28, 176s) |
-| `bug_median` | pass (9, 18s) | pass (9, 15s) | pass (10, 40s) | pass (21, 99s) | pass (16, 57s) |
-| `bug_word_case` | pass (10, 23s) | pass (28, 162s) | pass (9, 34s) | **FAIL** (19, 76s) | pass (15, 60s) |
+**Run 1**
 
-### Bug-fix checks, run 2
+| Task | `laguna-xs-2.1` | `ornith` | `glm-4.7-flash` | `gpt-oss:20b` | `qwen3-coder` | `nemotron-3.5-lightning` |
+|---|---|---|---|---|---|---|
+| `add_function` | pass (11, 38s) | pass (8, 17s) | pass (8, 42s) | **FAIL** (12, 24s) | pass (6, 33s) | pass (6, 42s) |
+| `deep_merge` | pass (7, 17s) | pass (5, 10s) | pass (5, 18s) | pass (6, 5s) | pass (16, 90s) | pass (5, 20s) |
+| `fizzbuzz` | pass (9, 19s) | pass (5, 6s) | pass (5, 21s) | pass (6, 4s) | pass (6, 20s) | pass (5, 24s) |
+| `keep_compatible` | pass (10, 22s) | pass (6, 9s) | pass (6, 24s) | pass (7, 6s) | pass (8, 19s) | pass (7, 28s) |
+| `off_by_one` | pass (10, 23s) | pass (5, 8s) | pass (7, 26s) | pass (5, 4s) | pass (7, 21s) | pass (6, 30s) |
+| `rename` | pass (14, 24s) | pass (9, 13s) | pass (8, 25s) | pass (12, 8s) | pass (11, 26s) | pass (13, 46s) |
+| `slugify` | pass (24, 95s) | pass (19, 49s) | pass (15, 69s) | **FAIL** (37, 103s) | pass (21, 122s) | pass (26, 102s) |
+| `stack_error` | pass (12, 25s) | pass (10, 14s) | pass (7, 23s) | pass (7, 8s) | pass (9, 28s) | pass (12, 39s) |
+| `bug_cart_total` | pass (10, 29s) | pass (9, 15s) | pass (8, 39s) | pass (13, 15s) | pass (12, 50s) | **FAIL** (40, 300s) |
+| `bug_date_range` | pass (13, 36s) | pass (10, 21s) | pass (9, 39s) | pass (10, 9s) | pass (16, 63s) | pass (18, 95s) |
+| `bug_duration` | pass (17, 50s) | **FAIL** (16, 29s) | **FAIL** (12, 62s) | pass (20, 34s) | **FAIL** (21, 89s) | **FAIL** (40, 179s) |
+| `bug_median` | pass (15, 36s) | pass (8, 13s) | pass (7, 32s) | pass (12, 12s) | **FAIL** (36, 198s) | **FAIL** (40, 171s) |
+| `bug_word_case` | pass (13, 32s) | pass (11, 17s) | pass (9, 38s) | pass (13, 15s) | pass (15, 62s) | **FAIL** (40, 148s) |
 
-"All" means the task was fixed, reproduced, valid and tested first. Otherwise the cell lists the checks that were
-missed.
+**Run 2**
 
-| Task | `laguna-xs-2.1` | `ornith` | `glm-4.7-flash` | `qwen3-coder` | `nemotron-3.5-lightning` |
-|---|---|---|---|---|---|
-| `bug_cart_total` | all | all | all | all | not fixed, reproduced, valid or tested first |
-| `bug_date_range` | all | all | all | all | not fixed, reproduced, valid or tested first |
-| `bug_duration` | not fixed | not fixed | not fixed | all | not fixed |
-| `bug_median` | all | all | all | all | all |
-| `bug_word_case` | all | all | all | not fixed or valid | all |
+| Task | `laguna-xs-2.1` | `ornith` | `glm-4.7-flash` | `gpt-oss:20b` | `qwen3-coder` | `nemotron-3.5-lightning` |
+|---|---|---|---|---|---|---|
+| `add_function` | pass (8, 34s) | pass (7, 15s) | pass (6, 38s) | pass (11, 85s) | pass (7, 37s) | pass (10, 54s) |
+| `deep_merge` | pass (11, 25s) | pass (6, 11s) | pass (5, 21s) | pass (6, 5s) | pass (7, 21s) | pass (5, 20s) |
+| `fizzbuzz` | pass (9, 19s) | pass (5, 8s) | pass (6, 21s) | pass (6, 5s) | pass (6, 20s) | pass (5, 24s) |
+| `keep_compatible` | pass (9, 18s) | pass (5, 7s) | pass (6, 19s) | pass (7, 5s) | pass (10, 29s) | pass (8, 31s) |
+| `off_by_one` | pass (10, 22s) | pass (5, 8s) | pass (8, 36s) | pass (5, 4s) | pass (7, 21s) | pass (5, 24s) |
+| `rename` | pass (14, 25s) | pass (9, 13s) | pass (10, 31s) | pass (13, 9s) | pass (10, 27s) | pass (8, 29s) |
+| `slugify` | pass (12, 27s) | pass (5, 8s) | **FAIL** (5, 19s) | **FAIL** (15, 25s) | pass (18, 74s) | pass (10, 40s) |
+| `stack_error` | pass (8, 18s) | pass (8, 11s) | pass (7, 24s) | pass (9, 12s) | pass (8, 25s) | pass (9, 38s) |
+| `bug_cart_total` | pass (13, 33s) | pass (8, 14s) | pass (8, 34s) | pass (11, 11s) | pass (12, 45s) | pass (34, 177s) |
+| `bug_date_range` | pass (12, 35s) | pass (10, 20s) | pass (10, 50s) | pass (11, 11s) | pass (16, 66s) | pass (24, 104s) |
+| `bug_duration` | pass (17, 53s) | **FAIL** (21, 48s) | **FAIL** (12, 58s) | pass (8, 13s) | **FAIL** (19, 68s) | **FAIL** (40, 215s) |
+| `bug_median` | pass (13, 30s) | pass (8, 13s) | pass (7, 35s) | pass (10, 9s) | **FAIL** (19, 69s) | pass (28, 103s) |
+| `bug_word_case` | pass (12, 26s) | pass (11, 18s) | pass (8, 35s) | pass (15, 17s) | pass (21, 84s) | pass (40, 154s) |
 
-### Why each run 2 failure happened
+## Why each failure happened
 
-- **`bug_duration` (`laguna-xs-2.1`, `ornith`, `nemotron-3.5-lightning`):** each reproduced the bug with a valid
-  test and fixed `"2h"`, but the fix also makes the parser accept an empty string, or `"h"`, as zero minutes, which
-  the original code rejected. See [Observations](#observations).
-- **`bug_duration` (`glm-4.7-flash`):** its fix didn't work (its own new test still fails), and it ended with an
-  empty answer even after being asked for one.
-- **`slugify` (`ornith`, `qwen3-coder`):** both handle the visible tests but not the hidden case
-  `"Python 3.12 -- released!"` (digits and repeated dashes). `ornith` finished in 20 seconds; both answers said all
-  tests pass, which was true of the tests they could see.
-- **`bug_word_case` (`qwen3-coder`):** it fixed the code, but also wrote a second "comprehensive" test file with a
-  wrong expectation, so its own test fails. The "valid" check exists to catch this.
-- **`bug_cart_total` (`nemotron-3.5-lightning`):** no test and no working fix (the hidden test gets 48 instead of
-  60), then an empty answer, twice.
-- **`bug_date_range` (`nemotron-3.5-lightning`):** no test and no fix; it used all 40 model calls.
+There were 17 failures in 156 attempts.
 
-## What the fixes changed
+- **`bug_duration`: the fix makes the parser accept an empty string (`ornith` ×2, `glm-4.7-flash` ×2,
+  `qwen3-coder` ×2, `nemotron-3.5-lightning` run 2).** The bug is that `"2h"` is rejected. The obvious fix makes
+  both parts of the pattern optional, so an empty string, or `"h"`, now parses as zero minutes, which the original
+  code rejected (hidden test `test_still_rejects`). Each of these attempts reproduced the bug with a valid test,
+  then made exactly this regression. Only `laguna-xs-2.1` and `gpt-oss:20b` kept the rejection, in all four of
+  their attempts. This was also the commonest failure on 8 October.
+- **`slugify`: digits and repeated dashes (`gpt-oss:20b` ×2, `glm-4.7-flash` run 2).** All three handle the visible
+  tests but not the hidden case `"Python 3.12 -- released!"`. `glm` finished in 5 calls and 19 seconds.
+- **`bug_median` (`qwen3-coder` ×2): a wrong extra test.** Both times it fixed the bug and reproduced it, but also
+  wrote a second "comprehensive" test file with expectations of its own, which fail against the reference fix (in
+  run 1, about the median of an empty list). The "valid" check exists to catch this. In run 1 it then re-ran the
+  same tests until Tinker stopped the request after 7 identical runs. `qwen3-coder` wrote extra test files like
+  this in most bug-fix tasks.
+- **`nemotron-3.5-lightning`: the 40-call limit (`bug_cart_total`, `bug_duration`, `bug_median` and
+  `bug_word_case` in run 1, `bug_duration` in run 2).** All five failures used every call without giving an
+  answer. In two of them the code was already fixed (`bug_cart_total`, `bug_word_case`), but the tests it wrote
+  didn't reproduce the bug, or it wrote none. It tested first in only 6 of its 10 bug-fix attempts; every other
+  model did in all 10.
+- **`add_function` (`gpt-oss:20b`, run 1): stuck re-reading.** It read `calc.py` 7 times in a row with nothing
+  changing, and Tinker stopped the request with the function unwritten.
 
-Run 2 added two fixes to Tinker after run 1 showed the problems:
+**Final answers still overclaim.** Of the 17 failures, 10 ended with an answer claiming that the tests pass or the
+work is done; the other 7 ended at the call limit (5) or were stopped for repeating a call (2). Grading the code,
+not the answer, is what shows them up.
 
-- **Streamed replies, with a 5-minute limit on silence instead of 10 minutes per reply.** In run 1,
-  `glm-4.7-flash` lost `stack_error` to the old limit even though its code was already correct. In run 2 no task
-  ended with an error, although `glm-4.7-flash` spent 560 seconds on one task.
-- **Asking again after an empty final answer.** This happened 4 times in run 2. Twice the model then gave a proper
-  answer (`ornith` on `bug_word_case`, `nemotron-3.5-lightning` on `slugify`, both passed), and twice it answered
-  with nothing again. Because grading looks at the code, not the answer, this fix improves what the user is told
-  more than it changes scores.
+## Before the fixes
+
+The first run on 12 October used Tinker `a253927`, before three bugs it exposed were fixed. All six models, twice
+each:
+
+| Model | Before the fixes | After | What the fix changed |
+|---|---|---|---|
+| `laguna-xs-2.1` | 26/26 | 26/26 | |
+| `ornith` | 25/26 | 24/26 | (run-to-run variation) |
+| `glm-4.7-flash` | 24/26 | 23/26 | (run-to-run variation) |
+| `gpt-oss:20b` | 23/26 | 23/26 | a task ended by an Ollama error is now retried |
+| `qwen3-coder` | **17/26** | 22/26 | it can no longer delete its reproduction tests |
+| `nemotron-3.5-lightning` | **17/26** | 21/26 | whitespace is no longer taken as a final answer |
+
+The three bugs:
+
+1. **Whitespace taken as a final answer.** Tinker has a shortcut for a model stuck in a loop: if it sends the same
+   text with the same read-only call twice, the text is taken as its final answer. It checked that the text wasn't
+   empty, but not that it wasn't whitespace, and `nemotron-3.5-lightning` sends `"\n\n"` with every tool call. So
+   running the tests twice in a row, which is normal, ended the task with a blank answer. The shortcut fired 24
+   times in nemotron's two runs, and was followed by a blank answer 14 times. Fixed: the shortcut needs real text.
+2. **Reproduction tests deleted.** The `delete_file` tool, added for the larger-task experiments after 8 October,
+   let `qwen3-coder` delete the test that proved the bug once the bug was fixed. It did so in every bug-fix task it
+   failed, despite instructions to keep the test. Fixed with a new mode setting, `deny_delete`: bugfix mode can
+   write test files but not delete them. In the final run `qwen3-coder` still tried to delete its tests 10 times,
+   was refused each time, and passed those tasks.
+3. **A tool call Ollama couldn't parse, mid-stream.** Ollama reports this as HTTP 500 at the start of a reply, but
+   as an error with status -1 partway through a streamed one, and Tinker only retried the first. `gpt-oss:20b` lost
+   a task to it. Fixed: both are retried. In the final run the retry fired once for `gpt-oss:20b`, and that task
+   passed.
+
+**Run-to-run variation is about one task in 26.** `ornith` and `glm-4.7-flash` each scored one lower after fixes
+that don't affect anything they did, and `nemotron-3.5-lightning` scored 9 and then 12 in its two final runs.
+
+A seventh model, `qwen2.5-coder:32b`, was also in the first run and is **left out of the results**, because it
+can't use Tinker as it is. It writes its tool calls as JSON in the text of its reply, instead of in Ollama's
+`tool_calls` field. Tinker recovers text tool calls only in qwen3-coder's XML style, so it took the first reply as
+the final answer, and every task ended after one model call (0/13 twice). That reflects how the model formats tool
+calls through Ollama, not its coding, so it isn't a fair comparison.
+
+## What changed since 8 October
+
+Tinker gained these between the two sets of results, most of them while it was used on larger tasks (see
+[DESIGN.md](DESIGN.md#15-the-larger-task-experiments)):
+
+- project **checks** run before a final answer, and a warning above the answer when they still fail;
+- thinking is saved and sent back to the model within a request, and a reply **cut off** at the length limit is
+  sent back with thinking turned off;
+- a **breaker for repeated calls**, which stops running a call repeated with the same result and ends the request
+  after 6 repeats;
+- the **`create_directory`** and **`delete_file`** tools, and `deny_delete`;
+- standard **input** for commands, and refusals that name the tool to use instead.
+
+Most of these target failures that only appeared on larger tasks, so the small evaluation tasks barely exercise
+them: in the final run no reply was cut off, and the repeat breaker stopped two requests.
+
+**Speed.** Several models were much faster than on 8 October with the same files: `glm-4.7-flash` took about 7
+minutes per run against 16, and `ornith` 3–4 minutes against 6. `nemotron-3.5-lightning` was slower (17–20 minutes
+against 13). The Ollama update is the most likely cause, but these results can't separate it from Tinker's
+changes.
 
 ## Observations
 
-- **`bug_duration` is the hardest task, and catches a common mistake.** The bug is that `"2h"` is rejected. The
-  obvious fix, making both parts of the pattern optional, also makes the parser accept an empty string as zero
-  minutes. Only 3 of 10 attempts passed, and 4 of the 7 failures were exactly this regression. The bug report
-  doesn't mention those inputs, but the original code rejected them: it's a regression a careful developer would
-  test for.
-- **Proving the bug first mostly works.** In 23 of the 25 bug-fix attempts in run 2, the model ran a failing test
-  before changing the code. The exceptions were both `nemotron-3.5-lightning`, which in two tasks wrote no test at
-  all.
-- **Effort varies a lot between models.** `qwen3-coder` needed a median of 17 model calls per task, against 8 or 9
-  for `laguna-xs-2.1`, `ornith` and `glm-4.7-flash`.
-- **Final answers overclaim.** In run 2, both failing `slugify` answers said all tests pass. The grading, which
-  runs hidden tests, is what shows the code is wrong.
+- **The hardest task tests care, not knowledge.** `bug_duration`'s obvious fix accepts an empty string. Four of
+  the six models failed it in every attempt in this run. A test of the inputs the original code rejected would
+  have caught the regression, and none of those attempts included one.
+- **Proving the bug first works for five of the six models.** All except `nemotron-3.5-lightning` ran a failing
+  test before changing the code in all 10 of their bug-fix attempts.
+- **Instructions aren't enough; enforcement is.** `qwen3-coder` was told to keep its reproduction tests and
+  deleted them anyway. Only refusing the deletion stopped it.
+- **Tinker works across models that use Ollama's tool calling.** `gpt-oss:20b` uses a different chat format and a
+  different kind of thinking (it can't turn thinking off), and worked unchanged. The one model that failed
+  completely, `qwen2.5-coder:32b`, did so because of how it formats tool calls.
+- **Effort varies.** The median number of model calls per task ranged from 7 to 13, and the time per run from 3.2
+  to 20.4 minutes. `ornith` and `gpt-oss:20b` were the quickest. `nemotron-3.5-lightning` was the slowest, partly
+  because it ran out of calls on five tasks.
 
 ## Caveats
 
-- **Two runs per task.** Even so, a difference of one or two tasks between models is within run-to-run variation.
-  Use `evals/run.py --repeat 3` or more before choosing between models with close totals.
-- **The two runs used slightly different versions of Tinker** (see the top of this page). The fixes mainly affect
-  timeouts and final answers, but they could change behaviour in other small ways.
-- **Small tasks.** Each project has one to three short files. Larger codebases, where finding the right place to
-  change is harder, aren't tested yet. Seven of the thirteen tasks are now too easy to separate models.
-- **One machine and one quantization.** Speed depends on how much of each model fits on the GPU. On a GPU that
-  holds the whole model, the 30B models would be much faster, and their quality might change at a different
-  quantization.
-- **An earlier run was discarded.** Before run 1, a bug in Tinker cut some tasks short (a shortcut meant to end
-  repetitive loops also stopped models that were still working). It was fixed in `a1dc663`.
-
-## Things to fix in Tinker
-
-- **An empty answer after the reminder.** Twice, the model answered with nothing even after being asked. Tinker
-  could fall back to the change report, so the user at least sees what happened.
-- **Reaching the 40-call limit.** Two tasks ended at the limit without a final answer, one of them with working
-  code (`qwen3-coder`, `bug_date_range`). Tinker could ask for a summary a few calls before the limit.
+- **Two runs per task.** Run-to-run variation is about one task in 26, so totals a point or two apart don't
+  separate models. Use `evals/run.py --repeat 3` or more before choosing between close models.
+- **Small tasks.** Each project has one to three short files, and seven of the thirteen tasks are now solved by
+  every model. Larger codebases aren't tested; the larger-task experiments in [DESIGN.md](DESIGN.md) suggest much
+  bigger differences between models there.
+- **One machine, and one quantization per model.** Speed depends on how much of each model fits in GPU memory.
+- **Ollama changed between the two dates**, so comparisons with 8 October mix Tinker's changes with Ollama's.
 
 ## Reproducing
 
